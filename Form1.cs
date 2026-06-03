@@ -7,6 +7,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using proiect_RISC.Forms;
 
 namespace proiect_RISC
 {
@@ -103,11 +104,43 @@ namespace proiect_RISC
             splitMain.Panel2.Controls.Add(grpPipeline);
 
             var menu = new MenuStrip();
+            
             var fileItem = new ToolStripMenuItem("File");
             fileItem.DropDownItems.AddRange(new ToolStripItem[] { new ToolStripMenuItem("New Session"), new ToolStripSeparator(), new ToolStripMenuItem("Load Program..."), new ToolStripMenuItem("Save Program..."), new ToolStripSeparator(), new ToolStripMenuItem("Exit") });
+            
+            var viewItem = new ToolStripMenuItem("View");
+            var pipelineViewItem = new ToolStripMenuItem("Pipeline View");
+            pipelineViewItem.Click += (s, e) => MessageBox.Show("The Pipeline View is the main active window.", "View", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            var cacheViewItem = new ToolStripMenuItem("Cache View");
+            cacheViewItem.Click += (s, e) => new CacheForm().Show(this);
+            var virtualMemoryViewItem = new ToolStripMenuItem("Virtual Memory View");
+            virtualMemoryViewItem.Click += (s, e) => new VirtualMemoryForm().Show(this);
+            viewItem.DropDownItems.AddRange(new ToolStripItem[] { pipelineViewItem, cacheViewItem, virtualMemoryViewItem, new ToolStripSeparator(), new ToolStripMenuItem("Reset Layout") });
+            
             var simItem = new ToolStripMenuItem("Simulation");
-            simItem.DropDownItems.AddRange(new ToolStripItem[] { new ToolStripMenuItem("Settings...") });
-            menu.Items.AddRange(new ToolStripItem[] { fileItem, simItem });
+            var settingsItem = new ToolStripMenuItem("Settings...");
+            settingsItem.Click += (s, e) => { using (var dlg = new SettingsForm()) dlg.ShowDialog(this); };
+            simItem.DropDownItems.AddRange(new ToolStripItem[] { new ToolStripMenuItem("Next Clock"), new ToolStripMenuItem("Run to End"), new ToolStripMenuItem("Reset"), new ToolStripSeparator(), settingsItem });
+            
+            var extItem = new ToolStripMenuItem("Extensions");
+            var scoreboardItem = new ToolStripMenuItem("Scoreboard Table");
+            scoreboardItem.Click += (s, e) => new SuperscalarForm().Show(this);
+            var tomasuloItem = new ToolStripMenuItem("Tomasulo / Reservation Stations");
+            tomasuloItem.Click += (s, e) => new SuperscalarForm().Show(this);
+            var prefetchItem = new ToolStripMenuItem("Prefetch Buffer");
+            prefetchItem.Click += (s, e) => {
+                var form = new SuperscalarForm();
+                // Select the 3rd tab (Prefetch Buffer)
+                if (form.Controls[0] is TabControl tc && tc.TabCount >= 3)
+                    tc.SelectedIndex = 2;
+                form.Show(this);
+            };
+            extItem.DropDownItems.AddRange(new ToolStripItem[] { scoreboardItem, tomasuloItem, prefetchItem });
+
+            var helpItem = new ToolStripMenuItem("Help");
+            helpItem.DropDownItems.Add(new ToolStripMenuItem("About"));
+
+            menu.Items.AddRange(new ToolStripItem[] { fileItem, viewItem, simItem, extItem, helpItem });
             this.MainMenuStrip = menu;
 
             this.Controls.Add(splitMain);
