@@ -220,6 +220,8 @@ namespace proiect_RISC
                     foreach (ToolStripItem si in item.DropDownItems)
                     {
                         if (si.Text == "New Session") si.Click += (s, e) => btnReset_Click(s, e);
+                        else if (si.Text == "Load Program...") si.Click += (s, e) => LoadProgramFromFile();
+                        else if (si.Text == "Save Program...") si.Click += (s, e) => SaveProgramToFile();
                         else if (si.Text == "Exit") si.Click += (s, e) => this.Close();
                     }
                     
@@ -463,6 +465,139 @@ namespace proiect_RISC
             {
                 MessageBox.Show("ATENTIE: Pentru a vedea stall-urile, dezactiveaza 'Enable Forwarding' inainte de a apasa Next Clock!",
                     "Demo Hazard RAW", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        // -------------------------------------------------------
+        // FILE OPERATIONS
+        // -------------------------------------------------------
+        private void LoadProgramFromFile()
+        {
+            using (var openFileDialog = new OpenFileDialog())
+            {
+                openFileDialog.Filter = "Assembly Files (*.asm)|*.asm|Text Files (*.txt)|*.txt|All Files (*.*)|*.*";
+                openFileDialog.Title = "Incarca Program RISC";
+                openFileDialog.InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+
+                if (openFileDialog.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        btnReset_Click(null, null);
+
+                        var lines = System.IO.File.ReadAllLines(openFileDialog.FileName);
+                        dgvMemory.Rows.Clear();
+
+                        uint currentAddress = 0x0100;
+                        foreach (var line in lines)
+                        {
+                            var trimmed = line.Trim();
+                            if (string.IsNullOrWhiteSpace(trimmed)) continue;
+                            // Ignora liniile care incep cu ; (comentarii pure)
+                            if (trimmed.StartsWith(";")) continue;
+
+                            string instruction = trimmed;
+                            string comment = "";
+
+                            // STEP 1: Extrage comentariul (ÎNTÂI!) pentru a evita parsarea greșită a 0x din comentariu
+                            int commentIndex = instruction.IndexOfAny(new[] { ';', '\u003B', '\uFF1B', '\u061B' });
+                            if (commentIndex >= 0)
+                            {
+                                comment = instruction.Substring(commentIndex + 1).Trim();
+                                instruction = instruction.Substring(0, commentIndex).Trim();
+                            }
+
+                            // STEP 2: Parsează adresa din instrucțiune daca exista
+                            // Suporta: "0x0100 OPCODE" sau "0x0100: OPCODE" sau "0x0100\tOPCODE" sau doar "OPCODE"
+                            
+                            // Verifica pentru format cu ":"
+                            if (instruction.Contains(":"))
+                            {
+                                var colonIndex = instruction.IndexOf(':');
+                                var addressPart = instruction.Substring(0, colonIndex).Trim();
+                                instruction = instruction.Substring(colonIndex + 1).Trim();
+
+                                if (addressPart.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    if (uint.TryParse(addressPart.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out uint parsedAddr))
+                                        currentAddress = parsedAddr;
+                                }
+                            }
+                            else
+                            {
+                                // Verifica pentru format cu spații/tab-uri: "0x0100 OPCODE" sau "0x0100\tOPCODE"
+                                var tokens = System.Text.RegularExpressions.Regex.Split(instruction, @"\s+");
+                                if (tokens.Length > 0 && tokens[0].StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    string addressPart = tokens[0];
+                                    if (uint.TryParse(addressPart.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out uint parsedAddr))
+                                    {
+                                        currentAddress = parsedAddr;
+                                        // Reconstituie instrucțiunea fără adresă
+                                        instruction = string.Join(" ", tokens.Skip(1)).Trim();
+                                    }
+                                }
+                            }
+
+                            // Verifica daca instructiunea e vida dupa stergerea adresei si comentariului
+                            if (string.IsNullOrWhiteSpace(instruction)) continue;
+
+                            dgvMemory.Rows.Add($"0x{currentAddress:X4}", instruction, comment);
+                            currentAddress += 4;
+                        }
+
+                        _isProgramLoaded = false;
+                        MessageBox.Show($"Program incarcat cu succes din:\n{openFileDialog.FileName}\n\n{dgvMemory.Rows.Count} instructiuni gasite.",
+                            "Incarcare Reusita", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Eroare la incarcarea fisierului:\n{ex.Message}",
+                            "Eroare", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            }
+        }
+
+        private void SaveProgramToFile()
+        {
+            using (var saveFileDialog = new SaveFileDialog())
+            {
+                saveFileDialog.Filter = "Assembly Files (*.asm)|*.asm|Text Files (*.txt)|*.txt|All Files (*.*)|*.*";
+                saveFileDialog.Title = "Salveaza Program RISC";
+                saveFileDialog.InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                saveFileDialog.FileName = "program.asm";
+
+                if (saveFileDialog.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        var lines = new List<string>();
+                        foreach (DataGridViewRow row in dgvMemory.Rows)
+                        {
+                            if (row.IsNewRow) continue;
+                            var addr = row.Cells[0].Value?.ToString() ?? "";
+                            var instr = row.Cells[1].Value?.ToString() ?? "";
+                            var comment = row.Cells[2].Value?.ToString() ?? "";
+
+                            if (string.IsNullOrWhiteSpace(instr)) continue;
+
+                            var line = $"{addr}: {instr}";
+                            if (!string.IsNullOrWhiteSpace(comment))
+                                line += $" ; {comment}";
+                            lines.Add(line);
+                        }
+
+                        System.IO.File.WriteAllLines(saveFileDialog.FileName, lines);
+                        MessageBox.Show($"Program salvat cu succes in:\n{saveFileDialog.FileName}",
+                            "Salvare Reusita", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Eroare la salvarea fisierului:\n{ex.Message}",
+                            "Eroare", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
             }
         }
 

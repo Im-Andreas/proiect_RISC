@@ -44,6 +44,8 @@ namespace proiect_RISC.Models
             SpaceTimeTable.Clear();
             for (int i = 0; i < _program.Count; i++)
             {
+                _program[i].ProgramIndex = i;
+                _program[i].IsBubble = false;
                 SpaceTimeTable.Add(new SpaceTimeEntry
                 {
                     InstructionLabel = _program[i].ToShortString(),
@@ -78,9 +80,16 @@ namespace proiect_RISC.Models
             ExecuteWB(log);
             ExecuteMEM(log);
 
-            ForwardingInfo fwdInfo = ForwardingInfo.None;
-            if (ForwardingEnabled) fwdInfo = CheckAndApplyForwarding(log);
+            // DEC/OF: Citeste operanzi si invalideaza registru destinatie
+            if (_stageDEC != null)
+                PrepareDEC(_stageDEC);
 
+            // Forwarding: aplica valori din MEM (care au ResultValue din ciclul anterior)
+            ForwardingInfo fwdInfo = ForwardingInfo.None;
+            if (ForwardingEnabled && (_stageEX != null || _stageMEM != null))
+                fwdInfo = CheckAndApplyForwarding(log);
+
+            // ExecuteEX: calculeaza ResultValue pentru _stageEX curent
             ExecuteEX(log);
 
             HazardInfo hazardInfo = HazardInfo.None;
@@ -115,17 +124,18 @@ namespace proiect_RISC.Models
 
             RecordSpaceTimeAll(ClockCycle);
 
-            if (_stageWB?.Opcode == Opcode.HALT || _stageMEM?.Opcode == Opcode.HALT || _stageEX?.Opcode == Opcode.HALT)
+            // HALT se opreste doar dupa ce termina WB
+            if (_stageWB != null && _stageWB.Opcode == Opcode.HALT)
             {
                 IsHalted = true;
-                log.AppendLine("[HALT] Instructiunea HALT a ajuns in pipeline — simulatorul se opreste.");
+                log.AppendLine("[HALT] Instructiunea HALT a terminat WB ï¿½ simulatorul se opreste.");
             }
 
             if (_stageIF == null && _stageDEC == null && _stageEX == null && _stageMEM == null && _stageWB == null)
             {
                 IsRunning = false;
                 IsHalted = true;
-                log.AppendLine("[END] Pipeline gol — program terminat.");
+                log.AppendLine("[END] Pipeline gol ï¿½ program terminat.");
             }
 
             var state = BuildSnapshot(log.ToString(), hazardInfo, fwdInfo);
@@ -314,13 +324,16 @@ namespace proiect_RISC.Models
 
             var readRegs = _stageDEC.GetReadRegisters();
 
-            if (_stageEX != null && _stageEX.GetWriteRegister() >= 0 && _stageEX.ResultValue.HasValue && _stageEX.Class != InstructionClass.LOAD)
+            // EX->EX forwarding: se aplica daca EX produce in registrul citit
+            // (nu verifica ResultValue.HasValue pentru ca poate fi calculat in ciclul curent)
+            if (_stageEX != null && _stageEX.GetWriteRegister() >= 0 && _stageEX.Class != InstructionClass.LOAD)
             {
                 int prodReg = _stageEX.GetWriteRegister();
                 if (readRegs.Contains(prodReg))
                 {
-                    ApplyForwardedValue(_stageDEC, prodReg, _stageEX.ResultValue.Value);
-                    var fwd = new ForwardingInfo { IsActive = true, Path = "EX?EX", Register = $"R{prodReg}", ForwardedValue = _stageEX.ResultValue.Value, Description = $"[FWD EX?EX] R{prodReg} = {_stageEX.ResultValue.Value} de la '{_stageEX.ToShortString()}' catre '{_stageDEC.ToShortString()}'" };
+                    int fwdValue = _stageEX.ResultValue ?? 0; // Foloseste rezultatul dacÄƒ exista, altfel placeholder
+                    ApplyForwardedValue(_stageDEC, prodReg, fwdValue);
+                    var fwd = new ForwardingInfo { IsActive = true, Path = "EX?EX", Register = $"R{prodReg}", ForwardedValue = fwdValue, Description = $"[FWD EX?EX] R{prodReg} de la '{_stageEX.ToShortString()}' catre '{_stageDEC.ToShortString()}'" };
                     log.AppendLine(fwd.Description);
                     _stageDEC.IsForwarded = true;
                     _stageDEC.ForwardSource = fwd.Path;
@@ -328,6 +341,7 @@ namespace proiect_RISC.Models
                 }
             }
 
+            // MEM->EX forwarding: se aplica daca MEM produce in registrul citit
             if (_stageMEM != null && _stageMEM.GetWriteRegister() >= 0 && _stageMEM.ResultValue.HasValue)
             {
                 int prodReg = _stageMEM.GetWriteRegister();
@@ -365,14 +379,24 @@ namespace proiect_RISC.Models
 
         private RISCInstruction CreateNOPBubble()
         {
-            return new RISCInstruction { Opcode = Opcode.NOP, Class = InstructionClass.NOP, RawText = "NOP (bubble)", CurrentStage = PipelineStage.EX };
+            return new RISCInstruction 
+            { 
+                Opcode = Opcode.NOP, 
+                Class = InstructionClass.NOP, 
+                RawText = "NOP (bubble)", 
+                CurrentStage = PipelineStage.EX,
+                IsBubble = true,
+                ProgramIndex = -1
+            };
         }
 
         private void RecordSpaceTime(RISCInstruction instr, int cycle, string stageLabel)
         {
-            if (instr == null) return;
-            var entry = SpaceTimeTable.FirstOrDefault(e => e.InstructionLabel == instr.ToShortString());
-            entry?.SetStage(cycle, stageLabel);
+            if (instr == null || instr.IsBubble) return;
+            if (instr.ProgramIndex >= 0 && instr.ProgramIndex < SpaceTimeTable.Count)
+            {
+                SpaceTimeTable[instr.ProgramIndex].SetStage(cycle, stageLabel);
+            }
         }
 
         private void RecordSpaceTimeAll(int cycle)

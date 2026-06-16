@@ -51,6 +51,10 @@ namespace proiect_RISC.Models
         public int? Op1Value { get; set; }
         public int? Op2Value { get; set; }
         public int? ResultValue { get; set; }
+        
+        // Index in program (for SpaceTime tracking)
+        public int ProgramIndex { get; set; } = -1;
+        public bool IsBubble { get; set; } = false;
 
         public List<int> GetReadRegisters()
         {
