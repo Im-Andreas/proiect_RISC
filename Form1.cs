@@ -155,7 +155,7 @@ namespace proiect_RISC
             var grpSpaceTime = new GroupBox { Text = "Pipeline Diagram (Space-Time)", Dock = DockStyle.Top, Height = 200, Padding = new Padding(6) };
             this.dgvSpaceTime = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false };
             this.dgvSpaceTime.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Instruction", Width = 180, Frozen = true });
-            for(int i = 1; i <= 20; i++) this.dgvSpaceTime.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = $"T{i}", Width = 40 });
+            for(int i = 1; i <= 100; i++) this.dgvSpaceTime.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = $"T{i}", Width = 40 });
             grpSpaceTime.Controls.Add(this.dgvSpaceTime);
 
             var grpHazardLog = new GroupBox { Text = "Hazard Log", Dock = DockStyle.Fill, Padding = new Padding(6) };
@@ -421,7 +421,10 @@ namespace proiect_RISC
             InitializeSpaceTimeDiagram(program);
 
             if (rtbHazardLog != null)
-                rtbHazardLog.AppendText($"Program incarcat: {program.Count} instructiuni, start la 0x{startAddr:X4}\n");
+            {
+                int realInstrCount = program.Count(i => i.Opcode != Opcode.NOP && i.Opcode != Opcode.UNKNOWN);
+                rtbHazardLog.AppendText($"Program incarcat: {realInstrCount} instructiuni, start la 0x{startAddr:X4}\n");
+            }
         }
 
         private IEnumerable<(uint address, string text)> GetProgramRowsFromGrid()
@@ -493,8 +496,13 @@ namespace proiect_RISC
                         {
                             var trimmed = line.Trim();
                             if (string.IsNullOrWhiteSpace(trimmed)) continue;
-                            // Ignora liniile care incep cu ; (comentarii pure)
-                            if (trimmed.StartsWith(";")) continue;
+                            
+                            // Liniile care incep cu ; sunt comentarii pure - le afișăm
+                            if (trimmed.StartsWith(";"))
+                            {
+                                dgvMemory.Rows.Add("", "", trimmed.Substring(1).Trim());
+                                continue;
+                            }
 
                             string instruction = trimmed;
                             string comment = "";
@@ -547,6 +555,10 @@ namespace proiect_RISC
                         }
 
                         _isProgramLoaded = false;
+                        
+                        // Încarcă imediat programul din grid în simulator
+                        LoadProgramFromGrid();
+                        
                         MessageBox.Show($"Program incarcat cu succes din:\n{openFileDialog.FileName}\n\n{dgvMemory.Rows.Count} instructiuni gasite.",
                             "Incarcare Reusita", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
@@ -723,6 +735,12 @@ namespace proiect_RISC
         private void AppendHazardLog(PipelineState state)
         {
             if (rtbHazardLog == null) return;
+
+            // CRITICAL: Afișează LOG-UL COMPLET cu [WB], [EX], [MEM], etc.
+            if (!string.IsNullOrWhiteSpace(state.LogText ?? state.LogMessage))
+            {
+                rtbHazardLog.AppendText((state.LogText ?? state.LogMessage) + "\n");
+            }
 
             if (state.ActiveHazard != null && state.ActiveHazard.HasHazard)
             {

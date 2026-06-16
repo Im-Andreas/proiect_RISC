@@ -170,6 +170,7 @@ namespace proiect_RISC.Models
         public string DetailWB { get; set; } = "";
 
         public string LogMessage { get; set; } = "";
+        public string LogText { get; set; } = ""; // Alias pentru log complet
     }
 
     public class HazardInfo

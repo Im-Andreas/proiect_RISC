@@ -80,24 +80,30 @@ namespace proiect_RISC.Models
             ExecuteWB(log);
             ExecuteMEM(log);
 
-            // DEC/OF: Citeste operanzi si invalideaza registru destinatie
-            if (_stageDEC != null)
-                PrepareDEC(_stageDEC);
-
-            // Forwarding: aplica valori din MEM (care au ResultValue din ciclul anterior)
-            ForwardingInfo fwdInfo = ForwardingInfo.None;
-            if (ForwardingEnabled && (_stageEX != null || _stageMEM != null))
-                fwdInfo = CheckAndApplyForwarding(log);
-
-            // ExecuteEX: calculeaza ResultValue pentru _stageEX curent
+            // CRITICAL: ExecuteEX PRIMUL - calculeaza ResultValue pentru ca forwarding-ul sa-l poata folosi!
             ExecuteEX(log);
 
+            // Citește operanzii din RegisterFile (fără invalidare încă!)
+            if (_stageDEC != null)
+            {
+                if (_stageDEC.Rs1.HasValue && _stageDEC.Rs1.Value >= 0) _stageDEC.Op1Value = Registers.Read(_stageDEC.Rs1.Value);
+                if (_stageDEC.Rs2.HasValue && _stageDEC.Rs2.Value >= 0) _stageDEC.Op2Value = Registers.Read(_stageDEC.Rs2.Value);
+            }
+
+            // Forwarding: suprascrie Op1Value/Op2Value cu valori forward-ate (EX/MEM au deja ResultValue)
+            ForwardingInfo fwdInfo = ForwardingInfo.None;
+            if (ForwardingEnabled && _stageDEC != null && (_stageEX != null || _stageMEM != null))
+                fwdInfo = CheckAndApplyForwarding(log);
+
+            // Hazard detection
             HazardInfo hazardInfo = HazardInfo.None;
             bool stallInserted = false;
             if (HazardDetectionEnabled && _stageDEC != null)
             {
                 hazardInfo = DetectHazard(_stageDEC);
-                if (hazardInfo.HasHazard && !fwdInfo.IsActive)
+                
+                // Stall DOAR daca hazard exista SI nu s-a aplicat forwarding
+                if (hazardInfo.HasHazard && !fwdInfo.IsActive && !_stageDEC.IsForwarded)
                 {
                     stallInserted = true;
                     TotalStalls++;
@@ -109,6 +115,10 @@ namespace proiect_RISC.Models
 
             if (!stallInserted)
             {
+                // INVALIDEAZĂ registrul de destinație DOAR când instrucțiunea avansează la EX!
+                if (_stageDEC != null && _stageDEC.GetWriteRegister() >= 0)
+                    Registers.InvalidateRegister(_stageDEC.GetWriteRegister());
+
                 _stageWB = _stageMEM;
                 _stageMEM = _stageEX;
                 _stageEX = _stageDEC;
@@ -248,11 +258,23 @@ namespace proiect_RISC.Models
                 case Opcode.BGT:
                 case Opcode.BLT:
                     if (EvaluateBranch(instr.Opcode, op1, op2))
-                        {
-                        uint target = (uint)((int)PC + (instr.Imm ?? 0));
+                    {
+                        // Calculează offset pe baza adresei instrucțiunii BRANCH (instr.Address), nu pe baza PC curent
+                        uint target = (uint)((int)instr.Address + (instr.Imm ?? 0));
                         PC = target;
                         _programCounter = FindInstructionIndex(PC);
-                        log.AppendLine($"  BRANCH taken -> PC = 0x{PC:X4}");
+                        
+                        if (_programCounter >= 0)
+                        {
+                            log.AppendLine($"  BRANCH taken -> PC = 0x{PC:X4} (index {_programCounter}) = '{_program[_programCounter].ToShortString()}'");
+                        }
+                        else
+                        {
+                            log.AppendLine($"  BRANCH taken -> PC = 0x{PC:X4} (ERROR: instrucțiune nu gasita!)");
+                            log.AppendLine($"  [DEBUG] Program addresses: {string.Join(", ", _program.Select(i => $"0x{i.Address:X4}:{i.ToShortString()}"))}");
+                            log.AppendLine($"  [DEBUG] _programCounter = {_programCounter}, _program.Count = {_program.Count}");
+                        }
+                        
                         _stageIF = null;
                         _stageDEC = null;
                     }
@@ -279,10 +301,12 @@ namespace proiect_RISC.Models
         {
             if (instr == null || instr.Opcode == Opcode.NOP) return;
 
-            if (instr.GetWriteRegister() >= 0) Registers.InvalidateRegister(instr.GetWriteRegister());
-
+            // CRITICAL: Citeste valorile INAINTE de a invalida registrul destinatie!
+            // Altfel ADDI R7, R7, 1 invalideaza R7 inainte de a citi valoarea pentru Rs1
             if (instr.Rs1.HasValue && instr.Rs1.Value >= 0) instr.Op1Value = Registers.Read(instr.Rs1.Value);
             if (instr.Rs2.HasValue && instr.Rs2.Value >= 0) instr.Op2Value = Registers.Read(instr.Rs2.Value);
+
+            if (instr.GetWriteRegister() >= 0) Registers.InvalidateRegister(instr.GetWriteRegister());
         }
 
         private HazardInfo DetectHazard(RISCInstruction consumer)
@@ -323,40 +347,39 @@ namespace proiect_RISC.Models
             if (_stageDEC == null) return ForwardingInfo.None;
 
             var readRegs = _stageDEC.GetReadRegisters();
+            ForwardingInfo firstFwd = null;
 
-            // EX->EX forwarding: se aplica daca EX produce in registrul citit
-            // (nu verifica ResultValue.HasValue pentru ca poate fi calculat in ciclul curent)
-            if (_stageEX != null && _stageEX.GetWriteRegister() >= 0 && _stageEX.Class != InstructionClass.LOAD)
+            // Aplică forwarding pentru TOȚI registrii citiți (nu returna după primul!)
+            foreach (int regIdx in readRegs)
             {
-                int prodReg = _stageEX.GetWriteRegister();
-                if (readRegs.Contains(prodReg))
+                if (regIdx < 0) continue;
+
+                // EX->EX forwarding: prioritate mai mare (date mai proaspete)
+                if (_stageEX != null && _stageEX.GetWriteRegister() == regIdx && _stageEX.Class != InstructionClass.LOAD)
                 {
-                    int fwdValue = _stageEX.ResultValue ?? 0; // Foloseste rezultatul dacă exista, altfel placeholder
-                    ApplyForwardedValue(_stageDEC, prodReg, fwdValue);
-                    var fwd = new ForwardingInfo { IsActive = true, Path = "EX?EX", Register = $"R{prodReg}", ForwardedValue = fwdValue, Description = $"[FWD EX?EX] R{prodReg} de la '{_stageEX.ToShortString()}' catre '{_stageDEC.ToShortString()}'" };
+                    int fwdValue = _stageEX.ResultValue ?? 0;
+                    ApplyForwardedValue(_stageDEC, regIdx, fwdValue);
+                    var fwd = new ForwardingInfo { IsActive = true, Path = "EX?EX", Register = $"R{regIdx}", ForwardedValue = fwdValue, Description = $"[FWD EX?EX] R{regIdx} de la '{_stageEX.ToShortString()}' catre '{_stageDEC.ToShortString()}'" };
                     log.AppendLine(fwd.Description);
                     _stageDEC.IsForwarded = true;
                     _stageDEC.ForwardSource = fwd.Path;
-                    return fwd;
+                    if (firstFwd == null) firstFwd = fwd;
+                    continue; // Nu verifica MEM pentru acest registru
                 }
-            }
 
-            // MEM->EX forwarding: se aplica daca MEM produce in registrul citit
-            if (_stageMEM != null && _stageMEM.GetWriteRegister() >= 0 && _stageMEM.ResultValue.HasValue)
-            {
-                int prodReg = _stageMEM.GetWriteRegister();
-                if (readRegs.Contains(prodReg))
+                // MEM->EX forwarding
+                if (_stageMEM != null && _stageMEM.GetWriteRegister() == regIdx && _stageMEM.ResultValue.HasValue)
                 {
-                    ApplyForwardedValue(_stageDEC, prodReg, _stageMEM.ResultValue.Value);
-                    var fwd = new ForwardingInfo { IsActive = true, Path = "MEM?EX", Register = $"R{prodReg}", ForwardedValue = _stageMEM.ResultValue.Value, Description = $"[FWD MEM?EX] R{prodReg} = {_stageMEM.ResultValue.Value} de la '{_stageMEM.ToShortString()}' catre '{_stageDEC.ToShortString()}'" };
+                    ApplyForwardedValue(_stageDEC, regIdx, _stageMEM.ResultValue.Value);
+                    var fwd = new ForwardingInfo { IsActive = true, Path = "MEM?EX", Register = $"R{regIdx}", ForwardedValue = _stageMEM.ResultValue.Value, Description = $"[FWD MEM?EX] R{regIdx} = {_stageMEM.ResultValue.Value} de la '{_stageMEM.ToShortString()}' catre '{_stageDEC.ToShortString()}'" };
                     log.AppendLine(fwd.Description);
                     _stageDEC.IsForwarded = true;
                     _stageDEC.ForwardSource = fwd.Path;
-                    return fwd;
+                    if (firstFwd == null) firstFwd = fwd;
                 }
             }
 
-            return ForwardingInfo.None;
+            return firstFwd ?? ForwardingInfo.None;
         }
 
         private void ApplyForwardedValue(RISCInstruction consumer, int regIdx, int value)
@@ -367,8 +390,19 @@ namespace proiect_RISC.Models
 
         private RISCInstruction FetchNextInstruction(StringBuilder log)
         {
-            if (_programCounter >= _program.Count) return null;
+            if (_program == null || _programCounter < 0 || _programCounter >= _program.Count)
+            {
+                IsRunning = false;
+                return null;
+            }
+
             var instr = _program[_programCounter];
+            if (instr == null)
+            {
+                _programCounter++;
+                return null;
+            }
+
             _programCounter++;
             PC = instr.Address;
             instr.EnterCycle = ClockCycle;
@@ -408,7 +442,18 @@ namespace proiect_RISC.Models
             RecordSpaceTime(_stageWB, cycle, "WB");
         }
 
-        private int FindInstructionIndex(uint address) => _program.FindIndex(i => i.Address == address);
+        private int FindInstructionIndex(uint address)
+        {
+            int index = _program.FindIndex(i => i.Address == address);
+            if (index < 0)
+            {
+                // Debug: printează toate adresele din program
+                var addresses = string.Join(", ", _program.Select(i => $"0x{i.Address:X4}"));
+                // Log ca string, nu ca apel cu log param
+                // Temporar, nu avem log aqui, deci nu putem printa
+            }
+            return index;
+        }
 
         private PipelineState BuildSnapshot(string log, HazardInfo hazard, ForwardingInfo fwd)
         {
@@ -426,6 +471,7 @@ namespace proiect_RISC.Models
                 ActiveForwarding = fwd ?? ForwardingInfo.None,
                 RegisterSnapshot = Registers.GetSnapshot(),
                 LogMessage = log,
+                LogText = log,
                 DetailIF = _stageIF != null ? $"0x{_stageIF.Address:X4}: {_stageIF.ToShortString()}" : "",
                 DetailDEC = _stageDEC != null ? $"Op1={_stageDEC.Op1Value?.ToString() ?? "?"}, Op2={_stageDEC.Op2Value?.ToString() ?? "?"}" : "",
                 DetailEX = _stageEX != null ? (_stageEX.ResultValue.HasValue ? $"ALU?{_stageEX.ResultValue.Value}" : "ALU...") : "",
