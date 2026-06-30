@@ -190,12 +190,21 @@ namespace proiect_RISC
             
             var extItem = new ToolStripMenuItem("Extensions");
             var scoreboardItem = new ToolStripMenuItem("Scoreboard Table");
-            scoreboardItem.Click += (s, e) => new SuperscalarForm().Show(this);
+            scoreboardItem.Click += (s, e) => {
+                var rows = GetProgramRowsFromGrid().ToList();
+                var program = _parser.ParseProgram(rows);
+
+                var formScoreboard = new SuperscalarForm(program, this);
+                formScoreboard.Show(this);
+            };
             var tomasuloItem = new ToolStripMenuItem("Tomasulo / Reservation Stations");
-            tomasuloItem.Click += (s, e) => new SuperscalarForm().Show(this);
+            tomasuloItem.Click += (s, e) => btnOpenSuperscalar_Click(s, e);
             var prefetchItem = new ToolStripMenuItem("Prefetch Buffer");
             prefetchItem.Click += (s, e) => {
-                var form = new SuperscalarForm();
+                var rows = GetProgramRowsFromGrid().ToList();
+                var program = _parser.ParseProgram(rows);
+
+                var form = new SuperscalarForm(program, this);
                 // Select the 3rd tab (Prefetch Buffer)
                 if (form.Controls[0] is TabControl tc && tc.TabCount >= 3)
                     tc.SelectedIndex = 2;
@@ -290,6 +299,15 @@ namespace proiect_RISC
             dgvMemory.Rows.Clear();
             for (int i = 0; i < 8; i++)
                 dgvMemory.Rows.Add($"0x{(0x0100 + i * 4):X4}", "", "");
+        }
+
+        private void btnOpenSuperscalar_Click(object sender, EventArgs e)
+        {
+            var rows = GetProgramRowsFromGrid().ToList();
+            var program = _parser.ParseProgram(rows);
+
+            var formScoreboard = new SuperscalarForm(program, this);
+            formScoreboard.Show(this);
         }
 
         // -------------------------------------------------------
@@ -440,6 +458,13 @@ namespace proiect_RISC
             }
         }
 
+        public List<RISCInstruction> GetCurrentProgram()
+        {
+            var rows = GetProgramRowsFromGrid().ToList();
+            if (rows.Count == 0) return new List<RISCInstruction>();
+            return _parser.ParseProgram(rows);
+        }
+
         private uint ParseHexAddress(string text)
         {
             text = text.Trim().ToUpperInvariant();
@@ -463,6 +488,9 @@ namespace proiect_RISC
                 dgvMemory.Rows.Add($"0x{addr:X4}", instr, comment);
 
             _isProgramLoaded = false;
+            
+            // Încarcă imediat programul din grid în simulator
+            LoadProgramFromGrid();
 
             if (key == "nota5_hazard_raw")
             {

@@ -72,15 +72,23 @@
     <Compile Include="Models\CacheLine.cs" />
     <Compile Include="Models\CacheSet.cs" />
     <Compile Include="Models\DemoPrograms.cs" />
+    <Compile Include="Models\FunctionalUnit.cs" />
     <Compile Include="Models\InstructionParser.cs" />
     <Compile Include="Models\PipelineSimulator.cs" />
     <Compile Include="Models\SetAssociativeCache.cs" />
     <Compile Include="Models\SimulatorModels.cs" />
+    <Compile Include="Models\SuperscalarSimulator.cs" />
     <Compile Include="Models\WritePolicyCache.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <EmbeddedResource Include="Form1.resx">
+      <DependentUpon>Form1.cs</DependentUpon>
+    </EmbeddedResource>
     <EmbeddedResource Include="Forms\CacheForm.resx">
       <DependentUpon>CacheForm.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Forms\SuperscalarForm.resx">
+      <DependentUpon>SuperscalarForm.cs</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="Properties\Resources.resx">
       <Generator>ResXFileCodeGenerator</Generator>
