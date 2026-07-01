@@ -47,6 +47,7 @@ namespace proiect_RISC.Models
 
         public WritePolicy WritePolicy { get; private set; }
         public WriteMissPolicy WriteMissPolicy { get; private set; }
+        public ReplacementPolicy ReplacementPolicy { get; private set; }
 
         private int _offsetBits;
         private int _indexBits;
@@ -70,13 +71,15 @@ namespace proiect_RISC.Models
 
         public WritePolicyCache(int numSets, int associativity, int blockSizeBytes,
             WritePolicy writePolicy = WritePolicy.WriteThrough,
-            WriteMissPolicy writeMissPolicy = WriteMissPolicy.WriteAllocate)
+            WriteMissPolicy writeMissPolicy = WriteMissPolicy.WriteAllocate,
+            ReplacementPolicy replacementPolicy = ReplacementPolicy.Random)
         {
-            Configure(numSets, associativity, blockSizeBytes, writePolicy, writeMissPolicy);
+            Configure(numSets, associativity, blockSizeBytes, writePolicy, writeMissPolicy, replacementPolicy);
         }
 
         public void Configure(int numSets, int associativity, int blockSizeBytes,
-            WritePolicy writePolicy, WriteMissPolicy writeMissPolicy)
+            WritePolicy writePolicy, WriteMissPolicy writeMissPolicy,
+            ReplacementPolicy replacementPolicy = ReplacementPolicy.Random)
         {
             if (!IsPowerOfTwo(numSets)) throw new ArgumentException("NumSets must be a power of 2.");
             if (!IsPowerOfTwo(blockSizeBytes)) throw new ArgumentException("BlockSize must be a power of 2.");
@@ -87,6 +90,7 @@ namespace proiect_RISC.Models
             BlockSizeBytes = blockSizeBytes;
             WritePolicy = writePolicy;
             WriteMissPolicy = writeMissPolicy;
+            ReplacementPolicy = replacementPolicy;
 
             _offsetBits = Log2(BlockSizeBytes);
             _indexBits = Log2(NumSets);
@@ -107,6 +111,12 @@ namespace proiect_RISC.Models
         public void SetWriteMissPolicy(WriteMissPolicy policy)
         {
             WriteMissPolicy = policy;
+            Reset();
+        }
+
+        public void SetReplacementPolicy(ReplacementPolicy policy)
+        {
+            ReplacementPolicy = policy;
             Reset();
         }
 
@@ -163,6 +173,7 @@ namespace proiect_RISC.Models
                 Hits++;
                 result.WayUsed = wayHit;
                 set.Ways[wayHit].LastUsedCycle = TotalAccesses;
+                set.Ways[wayHit].ReferenceBit = true;
 
                 if (operation == MemoryOperation.Write)
                     HandleWriteHit(set, wayHit, result);
@@ -220,7 +231,7 @@ namespace proiect_RISC.Models
             }
             else
             {
-                wayUsed = set.ChooseVictimWayRandom(_rng);
+                wayUsed = ChooseVictimWay(set);
                 result.WasEviction = true;
 
                 if (WritePolicy == WritePolicy.WriteBack && set.Ways[wayUsed].Dirty)
@@ -235,7 +246,21 @@ namespace proiect_RISC.Models
             set.Ways[wayUsed].Tag = tag;
             set.Ways[wayUsed].Dirty = false;
             set.Ways[wayUsed].LastUsedCycle = TotalAccesses;
+            set.Ways[wayUsed].ReferenceBit = true;
             return wayUsed;
+        }
+
+        private int ChooseVictimWay(CacheSet set)
+        {
+            switch (ReplacementPolicy)
+            {
+                case ReplacementPolicy.LRU:
+                    return set.ChooseVictimWayLRU();
+                case ReplacementPolicy.LRUApprox:
+                    return set.ChooseVictimWayClock();
+                default:
+                    return set.ChooseVictimWayRandom(_rng);
+            }
         }
 
         public CacheSet GetSet(int index) => _sets[index];

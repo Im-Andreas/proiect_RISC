@@ -7,6 +7,7 @@ namespace proiect_RISC.Models
         
         public bool Dirty { get; set; } = false;
         public int LastUsedCycle { get; set; } = 0;
+        public bool ReferenceBit { get; set; } = false;
  
         public void Reset()
         {
@@ -14,6 +15,7 @@ namespace proiect_RISC.Models
             Tag = 0;
             Dirty = false;
             LastUsedCycle = 0;
+            ReferenceBit = false;
         }
     }
 }
