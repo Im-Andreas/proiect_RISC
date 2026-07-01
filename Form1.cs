@@ -161,7 +161,6 @@ namespace proiect_RISC
             var grpSpaceTime = new GroupBox { Text = "Pipeline Diagram (Space-Time)", Dock = DockStyle.Top, Height = 200, Padding = new Padding(6) };
             this.dgvSpaceTime = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false };
             this.dgvSpaceTime.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Instruction", Width = 180, Frozen = true });
-            for(int i = 1; i <= 200; i++) this.dgvSpaceTime.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = $"T{i}", Width = 40 });
             grpSpaceTime.Controls.Add(this.dgvSpaceTime);
 
             // Cache stats panel (between pipeline and space-time)
@@ -766,15 +765,33 @@ namespace proiect_RISC
 
         private void InitializeSpaceTimeDiagram(List<RISCInstruction> program)
         {
+            dgvSpaceTime.SuspendLayout();
             dgvSpaceTime.Rows.Clear();
+            // Remove all cycle columns, keep only column 0 (Instruction)
+            while (dgvSpaceTime.Columns.Count > 1)
+                dgvSpaceTime.Columns.RemoveAt(dgvSpaceTime.Columns.Count - 1);
+            // Pre-add first batch of 50 cycle columns
+            for (int i = 1; i <= 50; i++)
+                dgvSpaceTime.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = $"T{i}", Width = 40 });
             foreach (var instr in program)
-            {
                 dgvSpaceTime.Rows.Add(instr.ToShortString());
-            }
+            dgvSpaceTime.ResumeLayout();
+        }
+
+        // Adds cycle columns in batches of 50 whenever the current cycle exceeds available columns.
+        private void EnsureSpaceTimeColumns(int cycle)
+        {
+            if (cycle < dgvSpaceTime.Columns.Count) return;
+            int addUpTo = ((cycle / 50) + 1) * 50;
+            dgvSpaceTime.SuspendLayout();
+            for (int i = dgvSpaceTime.Columns.Count; i <= addUpTo; i++)
+                dgvSpaceTime.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = $"T{i}", Width = 40 });
+            dgvSpaceTime.ResumeLayout();
         }
 
         private void UpdateSpaceTimeDiagram(PipelineState state)
         {
+            EnsureSpaceTimeColumns(state.ClockCycle);
             // Update based on SpaceTimeTable
             foreach (var entry in _simulator.SpaceTimeTable)
             {
@@ -813,6 +830,11 @@ namespace proiect_RISC
                                 row.Cells[state.ClockCycle].Style.ForeColor = Color.White;
                                 row.Cells[state.ClockCycle].Value = "CS";
                                 break;
+                            case "vm":
+                                row.Cells[state.ClockCycle].Style.BackColor = Color.FromArgb(142, 68, 173);
+                                row.Cells[state.ClockCycle].Style.ForeColor = Color.White;
+                                row.Cells[state.ClockCycle].Value = "VS";
+                                break;
                             default:
                                 row.Cells[state.ClockCycle].Style.BackColor = Color.White;
                                 break;
@@ -824,7 +846,11 @@ namespace proiect_RISC
 
         private void ClearSpaceTimeDiagram()
         {
+            dgvSpaceTime.SuspendLayout();
             dgvSpaceTime.Rows.Clear();
+            while (dgvSpaceTime.Columns.Count > 1)
+                dgvSpaceTime.Columns.RemoveAt(dgvSpaceTime.Columns.Count - 1);
+            dgvSpaceTime.ResumeLayout();
         }
 
         private void AppendHazardLog(PipelineState state)

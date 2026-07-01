@@ -17,6 +17,11 @@ namespace proiect_RISC.Forms
         private RichTextBox _rtbLog;
 
         private NumericUpDown _numTlbLatency, _numCacheLatency, _numMemLatency;
+        private NumericUpDown _numTlbEntries, _numVirtualPages, _numPhysFrames;
+        private NumericUpDown _numCacheAssoc;
+        private ComboBox _cmbPageSize, _cmbCacheSets, _cmbCacheBlock, _cmbTlbReplace, _cmbCacheReplace;
+        private CheckBox _chkVmStalls;
+        private Label _lblVmStallStats;
 
         private Label _lblConfig;
         private Label _lblTlbStats;
@@ -165,50 +170,168 @@ namespace proiect_RISC.Forms
 
         private TabPage BuildConfigTab()
         {
-            var tab = new TabPage("Latency Configuration");
+            var tab = new TabPage("Configurare");
+            var outer = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
 
-            var grp = new GroupBox { Text = "Fixed Latencies (cycles)", Dock = DockStyle.Top, Height = 200, Padding = new Padding(12) };
+            // ── Structura MMU ────────────────────────────────────────────────────
+            var grpStruct = new GroupBox { Text = "Structura MMU (se aplică la Reset)", Left = 8, Top = 8, Width = 700, Height = 230, Padding = new Padding(10) };
 
-            grp.Controls.Add(new Label { Text = "TLB access:", Left = 20, Top = 30, AutoSize = true });
-            _numTlbLatency = new NumericUpDown { Left = 180, Top = 27, Width = 90, Minimum = 0, Maximum = 10000, Value = 1 };
-            grp.Controls.Add(_numTlbLatency);
+            int col1 = 20, col2 = 180, col3 = 380, col4 = 520, row = 28;
 
-            grp.Controls.Add(new Label { Text = "Cache access:", Left = 20, Top = 66, AutoSize = true });
-            _numCacheLatency = new NumericUpDown { Left = 180, Top = 63, Width = 90, Minimum = 0, Maximum = 10000, Value = 1 };
-            grp.Controls.Add(_numCacheLatency);
+            grpStruct.Controls.Add(new Label { Text = "Dimensiune pagină (B):", Left = col1, Top = row, AutoSize = true });
+            _cmbPageSize = new ComboBox { Left = col2, Top = row - 3, Width = 90, DropDownStyle = ComboBoxStyle.DropDownList };
+            foreach (int v in new[] { 16, 32, 64, 128, 256, 512 }) _cmbPageSize.Items.Add(v);
+            _cmbPageSize.SelectedItem = Mmu?.PageSizeBytes ?? 64;
+            grpStruct.Controls.Add(_cmbPageSize);
 
-            grp.Controls.Add(new Label { Text = "Main Memory access:", Left = 20, Top = 102, AutoSize = true });
-            _numMemLatency = new NumericUpDown { Left = 180, Top = 99, Width = 90, Minimum = 0, Maximum = 100000, Value = 100 };
-            grp.Controls.Add(_numMemLatency);
+            grpStruct.Controls.Add(new Label { Text = "Pagini virtuale:", Left = col3, Top = row, AutoSize = true });
+            _numVirtualPages = new NumericUpDown { Left = col4, Top = row - 3, Width = 90, Minimum = 4, Maximum = 1024, Value = Mmu?.NumVirtualPages ?? 64 };
+            grpStruct.Controls.Add(_numVirtualPages);
 
-            var btnApply = new Button
+            row += 36;
+            grpStruct.Controls.Add(new Label { Text = "Cadre fizice:", Left = col1, Top = row, AutoSize = true });
+            _numPhysFrames = new NumericUpDown { Left = col2, Top = row - 3, Width = 90, Minimum = 2, Maximum = 256, Value = Mmu?.NumPhysicalFrames ?? 16 };
+            grpStruct.Controls.Add(_numPhysFrames);
+
+            grpStruct.Controls.Add(new Label { Text = "Intrări TLB:", Left = col3, Top = row, AutoSize = true });
+            _numTlbEntries = new NumericUpDown { Left = col4, Top = row - 3, Width = 90, Minimum = 1, Maximum = 64, Value = Mmu?.Tlb.NumEntries ?? 4 };
+            grpStruct.Controls.Add(_numTlbEntries);
+
+            row += 36;
+            grpStruct.Controls.Add(new Label { Text = "Politică înlocuire TLB:", Left = col1, Top = row, AutoSize = true });
+            _cmbTlbReplace = new ComboBox { Left = col2, Top = row - 3, Width = 120, DropDownStyle = ComboBoxStyle.DropDownList };
+            _cmbTlbReplace.Items.AddRange(new object[] { "LRU", "Random" });
+            _cmbTlbReplace.SelectedIndex = 0;
+            grpStruct.Controls.Add(_cmbTlbReplace);
+
+            row += 36;
+            grpStruct.Controls.Add(new Label { Text = "Cache seturi:", Left = col1, Top = row, AutoSize = true });
+            _cmbCacheSets = new ComboBox { Left = col2, Top = row - 3, Width = 90, DropDownStyle = ComboBoxStyle.DropDownList };
+            foreach (int v in new[] { 1, 2, 4, 8, 16, 32 }) _cmbCacheSets.Items.Add(v);
+            _cmbCacheSets.SelectedItem = Mmu?.DataCache.NumSets ?? 8;
+            grpStruct.Controls.Add(_cmbCacheSets);
+
+            grpStruct.Controls.Add(new Label { Text = "Asociativitate cache:", Left = col3, Top = row, AutoSize = true });
+            _numCacheAssoc = new NumericUpDown { Left = col4, Top = row - 3, Width = 90, Minimum = 1, Maximum = 16, Value = Mmu?.DataCache.Associativity ?? 2 };
+            grpStruct.Controls.Add(_numCacheAssoc);
+
+            row += 36;
+            grpStruct.Controls.Add(new Label { Text = "Bloc cache (B):", Left = col1, Top = row, AutoSize = true });
+            _cmbCacheBlock = new ComboBox { Left = col2, Top = row - 3, Width = 90, DropDownStyle = ComboBoxStyle.DropDownList };
+            foreach (int v in new[] { 4, 8, 16, 32, 64 }) _cmbCacheBlock.Items.Add(v);
+            _cmbCacheBlock.SelectedItem = Mmu?.DataCache.BlockSizeBytes ?? 16;
+            grpStruct.Controls.Add(_cmbCacheBlock);
+
+            grpStruct.Controls.Add(new Label { Text = "Politică înlocuire cache:", Left = col3, Top = row, AutoSize = true });
+            _cmbCacheReplace = new ComboBox { Left = col4, Top = row - 3, Width = 120, DropDownStyle = ComboBoxStyle.DropDownList };
+            _cmbCacheReplace.Items.AddRange(new object[] { "LRU", "Random" });
+            _cmbCacheReplace.SelectedIndex = 0;
+            grpStruct.Controls.Add(_cmbCacheReplace);
+
+            var btnApplyStruct = new Button
             {
-                Text = "Apply Latencies",
-                Left = 20,
-                Top = 140,
-                Width = 150,
-                Height = 30,
-                BackColor = Color.FromArgb(0x19, 0x76, 0xD2),
-                ForeColor = Color.White
+                Text = "Aplică structura",
+                Left = col1, Top = row + 40, Width = 150, Height = 30,
+                BackColor = Color.FromArgb(0x19, 0x76, 0xD2), ForeColor = Color.White
             };
-            btnApply.Click += (s, e) =>
+            btnApplyStruct.Click += (s, e) => ApplyMmuStructure();
+            grpStruct.Controls.Add(btnApplyStruct);
+
+            grpStruct.Controls.Add(new Label
+            {
+                Text = "Notă: modificarea structurii resetează TLB, cache și logul de acces.",
+                Left = col2 + 10, Top = row + 45, AutoSize = true, ForeColor = Color.Gray
+            });
+
+            outer.Controls.Add(grpStruct);
+
+            // ── Latențe ─────────────────────────────────────────────────────────
+            var grpLat = new GroupBox { Text = "Latențe fixe (cicli)", Left = 8, Top = 250, Width = 700, Height = 160, Padding = new Padding(10) };
+            int lr = 28;
+            grpLat.Controls.Add(new Label { Text = "Acces TLB:", Left = 20, Top = lr, AutoSize = true });
+            _numTlbLatency = new NumericUpDown { Left = 180, Top = lr - 3, Width = 90, Minimum = 0, Maximum = 10000, Value = Mmu?.Latencies.TlbCycles ?? 1 };
+            grpLat.Controls.Add(_numTlbLatency);
+
+            lr += 36;
+            grpLat.Controls.Add(new Label { Text = "Acces cache:", Left = 20, Top = lr, AutoSize = true });
+            _numCacheLatency = new NumericUpDown { Left = 180, Top = lr - 3, Width = 90, Minimum = 0, Maximum = 10000, Value = Mmu?.Latencies.CacheCycles ?? 1 };
+            grpLat.Controls.Add(_numCacheLatency);
+
+            lr += 36;
+            grpLat.Controls.Add(new Label { Text = "Acces memorie principală:", Left = 20, Top = lr, AutoSize = true });
+            _numMemLatency = new NumericUpDown { Left = 180, Top = lr - 3, Width = 90, Minimum = 0, Maximum = 100000, Value = Mmu?.Latencies.MainMemoryCycles ?? 100 };
+            grpLat.Controls.Add(_numMemLatency);
+
+            var btnApplyLat = new Button
+            {
+                Text = "Aplică latențe",
+                Left = 20, Top = lr + 36, Width = 150, Height = 30,
+                BackColor = Color.FromArgb(0x19, 0x76, 0xD2), ForeColor = Color.White
+            };
+            btnApplyLat.Click += (s, e) =>
             {
                 Mmu?.SetLatencies((int)_numTlbLatency.Value, (int)_numCacheLatency.Value, (int)_numMemLatency.Value);
                 RefreshAll();
             };
-            grp.Controls.Add(btnApply);
+            grpLat.Controls.Add(btnApplyLat);
+            outer.Controls.Add(grpLat);
 
-            grp.Controls.Add(new Label
+            // ── Stall-uri VM în pipeline ─────────────────────────────────────────
+            var grpVmStall = new GroupBox { Text = "Stall-uri TLB în pipeline", Left = 8, Top = 422, Width = 700, Height = 120, Padding = new Padding(10) };
+            _chkVmStalls = new CheckBox
             {
-                Text = "Note: applied latencies affect the cost of subsequent accesses.\nRe-run the program (Reset + Run) to recompute all costs.",
-                Left = 300,
-                Top = 30,
-                AutoSize = true,
-                ForeColor = Color.Gray
-            });
+                Text = "Activează stall-uri TLB în pipeline (cicli penalizare pentru TLB miss)",
+                Left = 20, Top = 28, Width = 600, Height = 24,
+                Checked = _simulator?.VmStallsEnabled ?? true
+            };
+            _chkVmStalls.CheckedChanged += (s, e) =>
+            {
+                if (_simulator != null) _simulator.VmStallsEnabled = _chkVmStalls.Checked;
+            };
+            grpVmStall.Controls.Add(_chkVmStalls);
 
-            tab.Controls.Add(grp);
+            _lblVmStallStats = new Label
+            {
+                Left = 20, Top = 58, AutoSize = true,
+                Font = new Font("Consolas", 8.5f), ForeColor = Color.DarkRed
+            };
+            grpVmStall.Controls.Add(_lblVmStallStats);
+
+            grpVmStall.Controls.Add(new Label
+            {
+                Text = "Costul stall = latență_cache (PTE în cache) sau latență_cache + latență_MP (PTE în MP).\nSe adaugă la penalizarea de DCache miss — modele ortogonale.",
+                Left = 20, Top = 80, AutoSize = true, ForeColor = Color.Gray
+            });
+            outer.Controls.Add(grpVmStall);
+
+            tab.Controls.Add(outer);
             return tab;
+        }
+
+        private void ApplyMmuStructure()
+        {
+            if (Mmu == null) return;
+            try
+            {
+                int pageSize = (int)(_cmbPageSize.SelectedItem ?? 64);
+                int virtPages = (int)_numVirtualPages.Value;
+                int physFrames = (int)_numPhysFrames.Value;
+                int tlbEntries = (int)_numTlbEntries.Value;
+                int cacheSets = (int)(_cmbCacheSets.SelectedItem ?? 8);
+                int cacheAssoc = (int)_numCacheAssoc.Value;
+                int cacheBlock = (int)(_cmbCacheBlock.SelectedItem ?? 16);
+                var tlbRepl = _cmbTlbReplace.SelectedIndex == 0 ? ReplacementPolicy.LRU : ReplacementPolicy.Random;
+                var cacheRepl = _cmbCacheReplace.SelectedIndex == 0 ? ReplacementPolicy.LRU : ReplacementPolicy.Random;
+
+                Mmu.Configure(pageSize, virtPages, physFrames, tlbEntries, cacheSets, cacheAssoc, cacheBlock, tlbRepl, cacheRepl);
+                Mmu.SetLatencies((int)_numTlbLatency.Value, (int)_numCacheLatency.Value, (int)_numMemLatency.Value);
+                RefreshAll();
+                MessageBox.Show("Structura MMU aplicată cu succes.\nResetează și rulează programul din nou pentru a vedea efectele.", "Aplicat", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Eroare la configurare: {ex.Message}", "Eroare", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void OnSimulatorCycleCompleted(PipelineState state)
@@ -259,9 +382,11 @@ namespace proiect_RISC.Forms
 
         private void RefreshAccessLog()
         {
-            _dgvAccessLog.Rows.Clear();
-            foreach (var r in Mmu.AccessLog)
+            var log = Mmu.AccessLog;
+            if (log.Count < _dgvAccessLog.Rows.Count) _dgvAccessLog.Rows.Clear();
+            for (int i = _dgvAccessLog.Rows.Count; i < log.Count; i++)
             {
+                var r = log[i];
                 int idx = _dgvAccessLog.Rows.Add(
                     r.Index,
                     r.ClockCycle,
@@ -278,8 +403,6 @@ namespace proiect_RISC.Forms
                     r.CyclesCost);
                 _dgvAccessLog.Rows[idx].DefaultCellStyle.BackColor = CaseColor((int)r.Case);
             }
-            if (_dgvAccessLog.Rows.Count > 0)
-                _dgvAccessLog.FirstDisplayedScrollingRowIndex = _dgvAccessLog.Rows.Count - 1;
         }
 
         private void RefreshCaseCounts()
@@ -296,7 +419,10 @@ namespace proiect_RISC.Forms
             _lblTlbStats.Text = $"TLB: {Mmu.TlbHits} hits / {Mmu.TlbMisses} miss ({Mmu.Tlb.HitRate:P0})";
             _lblCacheStats.Text = $"Cache: {Mmu.CacheHits} hits / {Mmu.CacheMisses} miss ({Mmu.DataCache.HitRate:P0})";
             _lblFaultStats.Text = $"Page faults: {Mmu.PageFaults}";
-            _lblCycleStats.Text = $"Total accesses: {Mmu.TotalAccesses} | Total simulation cycles: {Mmu.SimulationCycles}";
+            int pipelineCycle = _simulator?.ClockCycle ?? 0;
+            _lblCycleStats.Text = $"Total accesses: {Mmu.TotalAccesses} | Latență cumulată MMU: {Mmu.SimulationCycles} cicli (≠ clock cycles pipeline={pipelineCycle})";
+            if (_lblVmStallStats != null && _simulator != null)
+                _lblVmStallStats.Text = $"Stall-uri TLB pipeline: IF={_simulator.VmInstStallCycles} cicli  |  MEM={_simulator.VmDataStallCycles} cicli  |  Total={_simulator.VmInstStallCycles + _simulator.VmDataStallCycles} cicli";
         }
 
         private void RefreshTextLog()

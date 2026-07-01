@@ -37,11 +37,22 @@ namespace proiect_RISC.Models
         public int ICacheStallCycles { get; private set; } = 0;
         public int DCacheStallCycles { get; private set; } = 0;
 
+        // VM/TLB stall cycle counters (metrics)
+        public bool VmStallsEnabled { get; set; } = true;
+        public int VmInstStallCycles { get; private set; } = 0;
+        public int VmDataStallCycles { get; private set; } = 0;
+
         // Internal cache stall state
         private int _cacheStallsRemaining = 0;
         private bool _cacheStallIsICache = false;
         private RISCInstruction _cacheStallInstruction = null;
         private bool _dcacheMissPending = false;
+
+        // Internal VM/TLB stall state
+        private int _vmStallsRemaining = 0;
+        private bool _vmStallIsInst = false;
+        private RISCInstruction _vmStallInstruction = null;
+        private bool _vmMissPending = false;
 
         public void ConfigureInstructionCache(int numSets, int assoc, int blockSize, ReplacementPolicy replacement)
         {
@@ -104,9 +115,14 @@ namespace proiect_RISC.Models
             VirtualMemory.Reset();
             ICacheStallCycles = 0;
             DCacheStallCycles = 0;
+            VmInstStallCycles = 0;
+            VmDataStallCycles = 0;
             _cacheStallsRemaining = 0;
             _cacheStallInstruction = null;
             _dcacheMissPending = false;
+            _vmStallsRemaining = 0;
+            _vmStallInstruction = null;
+            _vmMissPending = false;
             History.Clear();
             foreach (var entry in SpaceTimeTable) entry.CycleStages.Clear();
         }
@@ -118,6 +134,22 @@ namespace proiect_RISC.Models
             ClockCycle++;
             var log = new StringBuilder();
             log.AppendLine($"=== Ciclu {ClockCycle} ===");
+
+            // ── VM/TLB stall handler — freeze pipeline, count cycles ─────────────
+            if (_vmStallsRemaining > 0)
+            {
+                _vmStallsRemaining--;
+                if (_vmStallIsInst) VmInstStallCycles++; else VmDataStallCycles++;
+                TotalStalls++;
+                string vmWhich = _vmStallIsInst ? "IF/TLB" : "MEM/TLB";
+                log.AppendLine($"[TLB STALL] {vmWhich} @ 0x{_vmStallInstruction?.Address:X4} — traducere adresă ({_vmStallsRemaining} cicli rămași)");
+                if (_vmStallInstruction != null)
+                    RecordSpaceTime(_vmStallInstruction, ClockCycle, "vm");
+                var vmS = BuildSnapshot(log.ToString(), HazardInfo.None, ForwardingInfo.None);
+                History.Add(vmS);
+                CycleCompleted?.Invoke(vmS);
+                return vmS;
+            }
 
             // ── Cache stall handler — freeze pipeline, count cycles ─────────────
             if (_cacheStallsRemaining > 0)
@@ -136,6 +168,19 @@ namespace proiect_RISC.Models
 
             ExecuteWB(log);
             ExecuteMEM(log);
+
+            // ── VM stall triggered in MEM stage — prevent pipeline advance ────────
+            if (_vmMissPending)
+            {
+                _vmMissPending = false;
+                if (_vmStallInstruction != null)
+                    RecordSpaceTime(_vmStallInstruction, ClockCycle, "vm");
+                log.AppendLine($"[TLB STALL] MEM/TLB MISS @ 0x{_vmStallInstruction?.Address:X4} — +{_vmStallsRemaining} cicli stall inserați");
+                var vmP = BuildSnapshot(log.ToString(), HazardInfo.None, ForwardingInfo.None);
+                History.Add(vmP);
+                CycleCompleted?.Invoke(vmP);
+                return vmP;
+            }
 
             // ── DCache stall check — prevent pipeline advance when miss triggered ─
             if (_dcacheMissPending)
@@ -210,14 +255,14 @@ namespace proiect_RISC.Models
             if (_stageWB != null && _stageWB.Opcode == Opcode.HALT)
             {
                 IsHalted = true;
-                log.AppendLine("[HALT] Instructiunea HALT a terminat WB � simulatorul se opreste.");
+                log.AppendLine("[HALT] Instructiunea HALT a terminat WB; simulatorul se opreste.");
             }
 
             if (_stageIF == null && _stageDEC == null && _stageEX == null && _stageMEM == null && _stageWB == null)
             {
                 IsRunning = false;
                 IsHalted = true;
-                log.AppendLine("[END] Pipeline gol � program terminat.");
+                log.AppendLine("[END] Pipeline gol; program terminat.");
             }
 
             var state = BuildSnapshot(log.ToString(), hazardInfo, fwdInfo);
@@ -267,15 +312,32 @@ namespace proiect_RISC.Models
                     if (instr.Op1Value.HasValue)
                     {
                         uint memAddr = (uint)instr.Op1Value.Value;
-                        // Skip DCache access if this instruction just resolved a miss stall
+                        // Skip DCache+VM if this instruction just resolved a DCache miss stall
                         if (instr == _cacheStallInstruction && !_cacheStallIsICache)
                         {
                             _cacheStallInstruction = null;
                             log.AppendLine($"  DCache miss stall resolvat — LOAD @ MEM[0x{memAddr:X4}] -> {instr.ResultValue}");
                             break;
                         }
+                        // TLB lookup (skip if we already stalled for this instruction's TLB miss)
+                        bool skipVmLoad = (instr == _vmStallInstruction);
+                        if (skipVmLoad) _vmStallInstruction = null;
+                        if (!skipVmLoad)
+                        {
+                            var vmrLoad = VirtualMemory.Access(memAddr, MemoryAccessType.DataRead, ClockCycle);
+                            int tlbStallLoad = ComputeTlbStall(vmrLoad);
+                            if (tlbStallLoad > 0)
+                            {
+                                _vmStallsRemaining = tlbStallLoad;
+                                _vmStallIsInst = false;
+                                _vmStallInstruction = instr;
+                                _vmMissPending = true;
+                                log.AppendLine($"  [TLB MISS] LOAD @ 0x{memAddr:X4} VP={vmrLoad.VirtualPage} → +{tlbStallLoad} cicli {(vmrLoad.PteInCache ? "(PTE în cache)" : "(PTE în MP)")}");
+                                break;
+                            }
+                            log.AppendLine($"  TLB {(vmrLoad.TlbHit ? "HIT " : "MISS→resolve")} LOAD VA=0x{memAddr:X4} PA=0x{vmrLoad.PhysicalAddress:X4} (Caz {(int)vmrLoad.Case})");
+                        }
                         bool dHitLoad = DataCache.Read(memAddr);
-                        VirtualMemory.Access(memAddr, MemoryAccessType.DataRead, ClockCycle);
                         instr.ResultValue = DataMemory.Read(memAddr);
                         log.AppendLine($"  DCache {(dHitLoad ? "HIT " : "MISS")} READ  @ MEM[0x{memAddr:X4}] -> {instr.ResultValue.Value}");
                         if (!dHitLoad && DCacheMissPenalty > 0)
@@ -292,15 +354,32 @@ namespace proiect_RISC.Models
                     if (instr.Op1Value.HasValue && instr.Op2Value.HasValue)
                     {
                         uint memAddr = (uint)instr.Op1Value.Value;
-                        // Skip DCache access if this instruction just resolved a miss stall
+                        // Skip DCache+VM if this instruction just resolved a DCache miss stall
                         if (instr == _cacheStallInstruction && !_cacheStallIsICache)
                         {
                             _cacheStallInstruction = null;
                             log.AppendLine($"  DCache miss stall resolvat — STORE @ MEM[0x{memAddr:X4}]");
                             break;
                         }
+                        // TLB lookup (skip if we already stalled for this instruction's TLB miss)
+                        bool skipVmStore = (instr == _vmStallInstruction);
+                        if (skipVmStore) _vmStallInstruction = null;
+                        if (!skipVmStore)
+                        {
+                            var vmrStore = VirtualMemory.Access(memAddr, MemoryAccessType.DataWrite, ClockCycle);
+                            int tlbStallStore = ComputeTlbStall(vmrStore);
+                            if (tlbStallStore > 0)
+                            {
+                                _vmStallsRemaining = tlbStallStore;
+                                _vmStallIsInst = false;
+                                _vmStallInstruction = instr;
+                                _vmMissPending = true;
+                                log.AppendLine($"  [TLB MISS] STORE @ 0x{memAddr:X4} VP={vmrStore.VirtualPage} → +{tlbStallStore} cicli {(vmrStore.PteInCache ? "(PTE în cache)" : "(PTE în MP)")}");
+                                break;
+                            }
+                            log.AppendLine($"  TLB {(vmrStore.TlbHit ? "HIT " : "MISS→resolve")} STORE VA=0x{memAddr:X4} PA=0x{vmrStore.PhysicalAddress:X4} (Caz {(int)vmrStore.Case})");
+                        }
                         bool dHitStore = DataCache.Write(memAddr);
-                        VirtualMemory.Access(memAddr, MemoryAccessType.DataWrite, ClockCycle);
                         DataMemory.Write(memAddr, instr.Op2Value.Value);
                         log.AppendLine($"  DCache {(dHitStore ? "HIT " : "MISS")} WRITE @ MEM[0x{memAddr:X4}] <- {instr.Op2Value.Value}");
                         if (!dHitStore && DCacheMissPenalty > 0)
@@ -511,20 +590,43 @@ namespace proiect_RISC.Models
             PC = instr.Address;
             instr.EnterCycle = ClockCycle;
             instr.CurrentStage = PipelineStage.IF;
+
+            // TLB lookup for instruction address translation
+            var vmrIF = VirtualMemory.Access(instr.Address, MemoryAccessType.Instruction, ClockCycle);
+            int ifTlbStall = ComputeTlbStall(vmrIF);
+            if (ifTlbStall > 0)
+            {
+                _vmStallsRemaining = ifTlbStall;
+                _vmStallIsInst = true;
+                _vmStallInstruction = instr;
+                log.AppendLine($"[IF]  TLB MISS → VP={vmrIF.VirtualPage} | +{ifTlbStall} cicli TLB stall {(vmrIF.PteInCache ? "(PTE în cache)" : "(PTE în MP)")} | {instr.ToShortString()} @ 0x{instr.Address:X4}");
+            }
+            else
+            {
+                log.AppendLine($"[IF]  TLB {(vmrIF.TlbHit ? "HIT " : "MISS→resolve")} VA=0x{instr.Address:X4} (Caz {(int)vmrIF.Case}) | {instr.ToShortString()}");
+            }
+
             bool iHit = InstructionCache.Read(instr.Address);
-            VirtualMemory.Access(instr.Address, MemoryAccessType.Instruction, ClockCycle);
             if (!iHit && ICacheMissPenalty > 0)
             {
                 _cacheStallsRemaining = ICacheMissPenalty;
                 _cacheStallIsICache = true;
                 _cacheStallInstruction = instr;
-                log.AppendLine($"[IF]  ICache MISS → +{ICacheMissPenalty} cicli stall | Fetch: {instr.ToShortString()} @ 0x{instr.Address:X4}");
+                log.AppendLine($"[IF]  ICache MISS → +{ICacheMissPenalty} cicli stall | {instr.ToShortString()} @ 0x{instr.Address:X4}");
             }
             else
             {
-                log.AppendLine($"[IF]  ICache {(iHit ? "HIT " : "MISS")} | Fetch: {instr.ToShortString()} @ 0x{instr.Address:X4}");
+                log.AppendLine($"[IF]  ICache {(iHit ? "HIT " : "MISS")} | {instr.ToShortString()} @ 0x{instr.Address:X4}");
             }
             return instr;
+        }
+
+        private int ComputeTlbStall(MemoryAccessResult vmr)
+        {
+            if (!VmStallsEnabled || vmr == null || vmr.TlbHit) return 0;
+            int stall = VirtualMemory.Mmu.Latencies.CacheCycles;
+            if (!vmr.PteInCache) stall += VirtualMemory.Mmu.Latencies.MainMemoryCycles;
+            return stall;
         }
 
         private RISCInstruction CreateNOPBubble()
