@@ -76,6 +76,7 @@
     <Compile Include="Models\PipelineSimulator.cs" />
     <Compile Include="Models\SetAssociativeCache.cs" />
     <Compile Include="Models\SimulatorModels.cs" />
+    <Compile Include="Models\VirtualMemorySimulator.cs" />
     <Compile Include="Models\WritePolicyCache.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
