@@ -134,11 +134,6 @@ namespace proiect_RISC.Models
                 case Opcode.ANDI:
                 case Opcode.ORI:
                 case Opcode.LDI:
-                case Opcode.JMP:
-                case Opcode.BEQ:
-                case Opcode.BNE:
-                case Opcode.BGT:
-                case Opcode.BLT:
                     return true;
                 default:
                     return false;
@@ -166,13 +161,6 @@ namespace proiect_RISC.Models
                 case Opcode.ORI: instr.ResultValue = op1 | (instr.Imm ?? 0); break;
 
                 case Opcode.LDI: instr.ResultValue = instr.Imm ?? 0; break;
-
-                case Opcode.JMP:
-                case Opcode.BEQ:
-                case Opcode.BNE:
-                case Opcode.BGT:
-                case Opcode.BLT:
-                    break;
             }
         }
     }
