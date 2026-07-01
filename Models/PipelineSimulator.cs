@@ -20,6 +20,38 @@ namespace proiect_RISC.Models
         public RegisterFile Registers { get; } = new RegisterFile();
         public Memory DataMemory { get; } = new Memory();
 
+        // ICache: read-only, no write policy — only set-associativity and replacement matter (E2.1/E2.2/E2.4/E2.5)
+        public WritePolicyCache InstructionCache { get; } = new WritePolicyCache(4, 1, 16,
+            WritePolicy.WriteThrough, WriteMissPolicy.NoWriteAllocate, ReplacementPolicy.LRU);
+
+        public WritePolicyCache DataCache { get; } = new WritePolicyCache(4, 2, 16,
+            WritePolicy.WriteThrough, WriteMissPolicy.WriteAllocate, ReplacementPolicy.LRU);
+
+        // Cache miss penalties (configurable)
+        public int ICacheMissPenalty { get; set; } = 10;
+        public int DCacheMissPenalty { get; set; } = 10;
+
+        // Cache stall cycle counters (metrics)
+        public int ICacheStallCycles { get; private set; } = 0;
+        public int DCacheStallCycles { get; private set; } = 0;
+
+        // Internal cache stall state
+        private int _cacheStallsRemaining = 0;
+        private bool _cacheStallIsICache = false;
+        private RISCInstruction _cacheStallInstruction = null;
+        private bool _dcacheMissPending = false;
+
+        public void ConfigureInstructionCache(int numSets, int assoc, int blockSize, ReplacementPolicy replacement)
+        {
+            InstructionCache.Configure(numSets, assoc, blockSize, WritePolicy.WriteThrough, WriteMissPolicy.NoWriteAllocate, replacement);
+        }
+
+        public void ConfigureDataCache(int numSets, int assoc, int blockSize,
+            WritePolicy writePolicy, WriteMissPolicy writeMissPolicy, ReplacementPolicy replacement)
+        {
+            DataCache.Configure(numSets, assoc, blockSize, writePolicy, writeMissPolicy, replacement);
+        }
+
         public int ClockCycle { get; private set; } = 0;
         public int TotalStalls { get; private set; } = 0;
         public bool IsRunning { get; private set; } = false;
@@ -65,6 +97,13 @@ namespace proiect_RISC.Models
             _stageIF = _stageDEC = _stageEX = _stageMEM = _stageWB = null;
             Registers.Reset();
             DataMemory.Reset();
+            InstructionCache.Reset();
+            DataCache.Reset();
+            ICacheStallCycles = 0;
+            DCacheStallCycles = 0;
+            _cacheStallsRemaining = 0;
+            _cacheStallInstruction = null;
+            _dcacheMissPending = false;
             History.Clear();
             foreach (var entry in SpaceTimeTable) entry.CycleStages.Clear();
         }
@@ -77,8 +116,38 @@ namespace proiect_RISC.Models
             var log = new StringBuilder();
             log.AppendLine($"=== Ciclu {ClockCycle} ===");
 
+            // ── Cache stall handler — freeze pipeline, count cycles ─────────────
+            if (_cacheStallsRemaining > 0)
+            {
+                _cacheStallsRemaining--;
+                if (_cacheStallIsICache) ICacheStallCycles++; else DCacheStallCycles++;
+                string which = _cacheStallIsICache ? "ICache" : "DCache";
+                log.AppendLine($"[CACHE STALL] {which} MISS @ 0x{_cacheStallInstruction?.Address:X4} — așteptare memorie ({_cacheStallsRemaining} cicli rămași)");
+                if (_cacheStallInstruction != null)
+                    RecordSpaceTime(_cacheStallInstruction, ClockCycle, "cache");
+                var cStall = BuildSnapshot(log.ToString(), HazardInfo.None, ForwardingInfo.None);
+                History.Add(cStall);
+                CycleCompleted?.Invoke(cStall);
+                return cStall;
+            }
+
             ExecuteWB(log);
             ExecuteMEM(log);
+
+            // ── DCache stall check — prevent pipeline advance when miss triggered ─
+            if (_dcacheMissPending)
+            {
+                _dcacheMissPending = false;
+                DCacheStallCycles++;
+                _stageWB = null; // WB already ran this cycle; clear to prevent re-execution
+                if (_cacheStallInstruction != null)
+                    RecordSpaceTime(_cacheStallInstruction, ClockCycle, "cache");
+                log.AppendLine($"[CACHE STALL] DCache MISS @ 0x{_cacheStallInstruction?.Address:X4} — +{DCacheMissPenalty} cicli stall inserați");
+                var dStall = BuildSnapshot(log.ToString(), HazardInfo.None, ForwardingInfo.None);
+                History.Add(dStall);
+                CycleCompleted?.Invoke(dStall);
+                return dStall;
+            }
 
             // CRITICAL: ExecuteEX PRIMUL - calculeaza ResultValue pentru ca forwarding-ul sa-l poata folosi!
             ExecuteEX(log);
@@ -195,8 +264,23 @@ namespace proiect_RISC.Models
                     if (instr.Op1Value.HasValue)
                     {
                         uint memAddr = (uint)instr.Op1Value.Value;
+                        // Skip DCache access if this instruction just resolved a miss stall
+                        if (instr == _cacheStallInstruction && !_cacheStallIsICache)
+                        {
+                            _cacheStallInstruction = null;
+                            log.AppendLine($"  DCache miss stall resolvat — LOAD @ MEM[0x{memAddr:X4}] -> {instr.ResultValue}");
+                            break;
+                        }
+                        bool dHitLoad = DataCache.Read(memAddr);
                         instr.ResultValue = DataMemory.Read(memAddr);
-                        log.AppendLine($"  MEM[0x{memAddr:X4}] -> {instr.ResultValue.Value}");
+                        log.AppendLine($"  DCache {(dHitLoad ? "HIT " : "MISS")} READ  @ MEM[0x{memAddr:X4}] -> {instr.ResultValue.Value}");
+                        if (!dHitLoad && DCacheMissPenalty > 0)
+                        {
+                            _cacheStallsRemaining = DCacheMissPenalty - 1;
+                            _cacheStallIsICache = false;
+                            _cacheStallInstruction = instr;
+                            _dcacheMissPending = true;
+                        }
                     }
                     break;
 
@@ -204,8 +288,23 @@ namespace proiect_RISC.Models
                     if (instr.Op1Value.HasValue && instr.Op2Value.HasValue)
                     {
                         uint memAddr = (uint)instr.Op1Value.Value;
+                        // Skip DCache access if this instruction just resolved a miss stall
+                        if (instr == _cacheStallInstruction && !_cacheStallIsICache)
+                        {
+                            _cacheStallInstruction = null;
+                            log.AppendLine($"  DCache miss stall resolvat — STORE @ MEM[0x{memAddr:X4}]");
+                            break;
+                        }
+                        bool dHitStore = DataCache.Write(memAddr);
                         DataMemory.Write(memAddr, instr.Op2Value.Value);
-                        log.AppendLine($"  MEM[0x{memAddr:X4}] <- {instr.Op2Value.Value}");
+                        log.AppendLine($"  DCache {(dHitStore ? "HIT " : "MISS")} WRITE @ MEM[0x{memAddr:X4}] <- {instr.Op2Value.Value}");
+                        if (!dHitStore && DCacheMissPenalty > 0)
+                        {
+                            _cacheStallsRemaining = DCacheMissPenalty - 1;
+                            _cacheStallIsICache = false;
+                            _cacheStallInstruction = instr;
+                            _dcacheMissPending = true;
+                        }
                     }
                     break;
             }
@@ -407,7 +506,18 @@ namespace proiect_RISC.Models
             PC = instr.Address;
             instr.EnterCycle = ClockCycle;
             instr.CurrentStage = PipelineStage.IF;
-            log.AppendLine($"[IF]  Fetch: {instr.ToShortString()} @ 0x{instr.Address:X4}");
+            bool iHit = InstructionCache.Read(instr.Address);
+            if (!iHit && ICacheMissPenalty > 0)
+            {
+                _cacheStallsRemaining = ICacheMissPenalty;
+                _cacheStallIsICache = true;
+                _cacheStallInstruction = instr;
+                log.AppendLine($"[IF]  ICache MISS → +{ICacheMissPenalty} cicli stall | Fetch: {instr.ToShortString()} @ 0x{instr.Address:X4}");
+            }
+            else
+            {
+                log.AppendLine($"[IF]  ICache {(iHit ? "HIT " : "MISS")} | Fetch: {instr.ToShortString()} @ 0x{instr.Address:X4}");
+            }
             return instr;
         }
 

@@ -45,6 +45,12 @@ namespace proiect_RISC
         private Label lblMEM_Content;
         private Label lblWB_Content;
 
+        // Cache stats labels
+        private Label lblICacheStats;
+        private Label lblDCacheStats;
+        private Label lblCacheMetrics;
+        private CacheForm _activeCacheForm;
+
         public Form1()
         {
             InitializeComponent();
@@ -155,8 +161,34 @@ namespace proiect_RISC
             var grpSpaceTime = new GroupBox { Text = "Pipeline Diagram (Space-Time)", Dock = DockStyle.Top, Height = 200, Padding = new Padding(6) };
             this.dgvSpaceTime = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false };
             this.dgvSpaceTime.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Instruction", Width = 180, Frozen = true });
-            for(int i = 1; i <= 100; i++) this.dgvSpaceTime.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = $"T{i}", Width = 40 });
+            for(int i = 1; i <= 200; i++) this.dgvSpaceTime.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = $"T{i}", Width = 40 });
             grpSpaceTime.Controls.Add(this.dgvSpaceTime);
+
+            // Cache stats panel (between pipeline and space-time)
+            var grpCacheStats = new GroupBox { Text = "Cache Statistics (Live)", Dock = DockStyle.Top, Height = 90, Padding = new Padding(6) };
+            this.lblICacheStats = new Label { Text = "ICache: --", AutoSize = true, Left = 8, Top = 18, Font = new Font("Consolas", 8) };
+            this.lblDCacheStats = new Label { Text = "DCache: --", AutoSize = true, Left = 8, Top = 36, Font = new Font("Consolas", 8) };
+            this.lblCacheMetrics = new Label { Text = "Cicli: --", AutoSize = true, Left = 8, Top = 54, Font = new Font("Consolas", 8), ForeColor = Color.DarkRed };
+
+            var btnOpenCache = new Button
+            {
+                Text = "Open Cache View",
+                Left = 600, Top = 18, Width = 130, Height = 44,
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                BackColor = Color.FromArgb(0x19, 0x76, 0xD2),
+                ForeColor = Color.White
+            };
+            btnOpenCache.Click += (s, e) =>
+            {
+                if (_activeCacheForm == null || _activeCacheForm.IsDisposed)
+                    _activeCacheForm = new CacheForm(_simulator);
+                _activeCacheForm.Show(this);
+                _activeCacheForm.BringToFront();
+            };
+            grpCacheStats.Controls.Add(this.lblICacheStats);
+            grpCacheStats.Controls.Add(this.lblDCacheStats);
+            grpCacheStats.Controls.Add(this.lblCacheMetrics);
+            grpCacheStats.Controls.Add(btnOpenCache);
 
             var grpHazardLog = new GroupBox { Text = "Hazard Log", Dock = DockStyle.Fill, Padding = new Padding(6) };
             this.rtbHazardLog = new RichTextBox { Dock = DockStyle.Fill, ReadOnly = true, Font = new Font("Consolas", 9), Text = "[Hazard Detection Log]\n" };
@@ -167,6 +199,7 @@ namespace proiect_RISC
 
             splitMain.Panel2.Controls.Add(grpHazardLog);
             splitMain.Panel2.Controls.Add(grpSpaceTime);
+            splitMain.Panel2.Controls.Add(grpCacheStats);
             splitMain.Panel2.Controls.Add(grpPipeline);
 
             var menu = new MenuStrip();
@@ -178,7 +211,13 @@ namespace proiect_RISC
             var pipelineViewItem = new ToolStripMenuItem("Pipeline View");
             pipelineViewItem.Click += (s, e) => MessageBox.Show("The Pipeline View is the main active window.", "View", MessageBoxButtons.OK, MessageBoxIcon.Information);
             var cacheViewItem = new ToolStripMenuItem("Cache View");
-            cacheViewItem.Click += (s, e) => new CacheForm().Show(this);
+            cacheViewItem.Click += (s, e) =>
+            {
+                if (_activeCacheForm == null || _activeCacheForm.IsDisposed)
+                    _activeCacheForm = new CacheForm(_simulator);
+                _activeCacheForm.Show(this);
+                _activeCacheForm.BringToFront();
+            };
             var virtualMemoryViewItem = new ToolStripMenuItem("Virtual Memory View");
             virtualMemoryViewItem.Click += (s, e) => new VirtualMemoryForm().Show(this);
             viewItem.DropDownItems.AddRange(new ToolStripItem[] { pipelineViewItem, cacheViewItem, virtualMemoryViewItem, new ToolStripSeparator(), new ToolStripMenuItem("Reset Layout") });
@@ -348,6 +387,11 @@ namespace proiect_RISC
 
             btnRunToEnd.Enabled = true;
             btnNextClock.Enabled = true;
+
+            // Reset cache stats display
+            if (lblICacheStats != null) lblICacheStats.Text = "ICache: --";
+            if (lblDCacheStats != null) lblDCacheStats.Text = "DCache: --";
+            if (lblCacheMetrics != null) lblCacheMetrics.Text = "Cicli: — | Rulați simularea pentru metrici.";
         }
 
         private void btnAddRow_Click(object sender, EventArgs e)
@@ -651,6 +695,50 @@ namespace proiect_RISC
 
             // Update hazard log
             AppendHazardLog(state);
+
+            // Update cache statistics
+            UpdateCacheStats();
+        }
+
+        private void UpdateCacheStats()
+        {
+            if (lblICacheStats == null || lblDCacheStats == null) return;
+            var ic = _simulator.InstructionCache;
+            var dc = _simulator.DataCache;
+            int iStall = _simulator.ICacheStallCycles;
+            int dStall = _simulator.DCacheStallCycles;
+            int hazStall = _simulator.TotalStalls;
+            int totalCycles = _simulator.ClockCycle;
+            int instrCount = _simulator.SpaceTimeTable.Count;
+
+            lblICacheStats.Text = ic.TotalAccesses == 0
+                ? $"ICache ({ic.NumSets}s×{ic.Associativity}w×{ic.BlockSizeBytes}B {ic.ReplacementPolicy} | penalty={_simulator.ICacheMissPenalty}): —"
+                : $"ICache ({ic.NumSets}s×{ic.Associativity}w | pen={_simulator.ICacheMissPenalty}): {ic.TotalAccesses} acc | {ic.Hits} hits ({ic.HitRate:P0}) | {ic.Misses} miss → +{iStall} cicli stall";
+
+            lblDCacheStats.Text = dc.TotalAccesses == 0
+                ? $"DCache ({dc.NumSets}s×{dc.Associativity}w | pen={_simulator.DCacheMissPenalty}): —"
+                : $"DCache ({dc.NumSets}s×{dc.Associativity}w | pen={_simulator.DCacheMissPenalty}): {dc.TotalAccesses} acc | {dc.Hits} hits ({dc.HitRate:P0}) | {dc.Misses} miss → +{dStall} cicli stall";
+
+            if (lblCacheMetrics != null)
+            {
+                if (totalCycles == 0 || instrCount == 0)
+                {
+                    lblCacheMetrics.Text = "Cicli: — | Rulați simularea pentru metrici.";
+                }
+                else
+                {
+                    int pipelineCycles = totalCycles - hazStall - iStall - dStall;
+                    double cpiReal = (double)totalCycles / instrCount;
+                    double cpiIdeal = (double)pipelineCycles / instrCount;
+                    int hypotheticalAllMiss = pipelineCycles + hazStall
+                        + ic.TotalAccesses * _simulator.ICacheMissPenalty
+                        + dc.TotalAccesses * _simulator.DCacheMissPenalty;
+                    int saved = hypotheticalAllMiss - totalCycles;
+                    lblCacheMetrics.Text =
+                        $"Cicli totali: {totalCycles} = {pipelineCycles} pipeline + {hazStall} hazard + {iStall} ICache + {dStall} DCache stall | " +
+                        $"CPI: {cpiReal:F2} (ideal fără miss: {cpiIdeal:F2}) | Cache economisește ~{saved} cicli vs. no-cache";
+                }
+            }
         }
 
         private void UpdatePipelineStages(PipelineState state)
@@ -698,6 +786,7 @@ namespace proiect_RISC
                     {
                         row.Cells[state.ClockCycle].Value = stage;
                         // Color code: IF=lightblue, DEC=yellow, EX=orange, MEM=lightgreen, WB=pink
+                        // stall=red, cache=amber (cache miss penalty stall)
                         switch (stage)
                         {
                             case "IF":
@@ -715,8 +804,14 @@ namespace proiect_RISC
                             case "WB":
                                 row.Cells[state.ClockCycle].Style.BackColor = Color.Pink;
                                 break;
-                            case "STALL":
-                                row.Cells[state.ClockCycle].Style.BackColor = Color.Red;
+                            case "stall":
+                                row.Cells[state.ClockCycle].Style.BackColor = Color.FromArgb(255, 100, 100);
+                                row.Cells[state.ClockCycle].Style.ForeColor = Color.White;
+                                break;
+                            case "cache":
+                                row.Cells[state.ClockCycle].Style.BackColor = Color.FromArgb(255, 165, 0);
+                                row.Cells[state.ClockCycle].Style.ForeColor = Color.White;
+                                row.Cells[state.ClockCycle].Value = "CS";
                                 break;
                             default:
                                 row.Cells[state.ClockCycle].Style.BackColor = Color.White;

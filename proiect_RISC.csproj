@@ -70,6 +70,7 @@
     <Compile Include="Models\CacheAccess.cs" />
     <Compile Include="Models\CacheBlackBox.cs" />
     <Compile Include="Models\CacheLine.cs" />
+    
     <Compile Include="Models\CacheSet.cs" />
     <Compile Include="Models\DemoPrograms.cs" />
     <Compile Include="Models\InstructionParser.cs" />

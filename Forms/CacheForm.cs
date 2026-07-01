@@ -11,6 +11,17 @@ namespace proiect_RISC.Forms
         private readonly SetAssociativeCache _saCache = new SetAssociativeCache(4, 2, 16);
         private readonly WritePolicyCache _wpCache = new WritePolicyCache(4, 2, 16);
 
+        // Live pipeline cache fields
+        private readonly PipelineSimulator _simulator;
+        private DataGridView _dgvLiveILog, _dgvLiveIContents, _dgvLiveDLog, _dgvLiveDContents;
+        private Label _lblLiveIStats, _lblLiveIDetails, _lblLiveDStats, _lblLiveDDetails;
+        // ICache live-configuration controls (read-only cache — no write policy)
+        private NumericUpDown _liveISets, _liveIWays, _liveIBlockSize, _liveICachePenalty;
+        private ComboBox _liveIReplacement;
+        // DCache live-configuration controls
+        private NumericUpDown _liveSets, _liveWays, _liveBlockSize, _liveDCachePenalty;
+        private ComboBox _liveWritePolicy, _liveWriteMissPolicy, _liveReplacement;
+
         private DataGridView _dgvLog;
         private TextBox _txtAddress;
         private Label _lblTotal, _lblHits, _lblMisses, _lblHitRate, _lblMissRate;
@@ -30,12 +41,22 @@ namespace proiect_RISC.Forms
         private Label _lblWpTotal, _lblWpReads, _lblWpWrites, _lblWpHits, _lblWpMisses, _lblWpHitRate;
         private Label _lblWpMemReads, _lblWpMemWrites, _lblWpWriteBacks;
 
-        public CacheForm()
+        public CacheForm() : this(null) { }
+
+        public CacheForm(PipelineSimulator simulator)
         {
+            _simulator = simulator;
             this.Text = "Cache Memory Hierarchy";
-            this.Size = new Size(1200, 750);
+            this.Size = new Size(1200, 900);
 
             var tc = new TabControl { Dock = DockStyle.Fill };
+
+            if (simulator != null)
+            {
+                var tabLive = new TabPage("Pipeline Cache (Live)");
+                BuildPipelineLiveTab(tabLive, simulator);
+                tc.TabPages.Add(tabLive);
+            }
 
             var tabBlackBox = new TabPage("Cache Overview (Black-Box)");
             BuildBlackBoxTab(tabBlackBox);
@@ -50,6 +71,395 @@ namespace proiect_RISC.Forms
             tc.TabPages.Add(tabWritePolicy);
 
             this.Controls.Add(tc);
+
+            if (simulator != null)
+            {
+                simulator.CycleCompleted += OnSimulatorCycleCompleted;
+                this.FormClosed += (s, e) => simulator.CycleCompleted -= OnSimulatorCycleCompleted;
+                tc.SelectedIndex = 0;
+                this.Shown += (s, e) => RefreshLiveTab();
+            }
+        }
+
+        private void BuildPipelineLiveTab(TabPage tab, PipelineSimulator simulator)
+        {
+            // ── Configuration panel ───────────────────────────────────────────────
+            var pnlConfig = new Panel { Dock = DockStyle.Top, Height = 148, Padding = new Padding(6, 4, 6, 4), BackColor = Color.FromArgb(240, 248, 255) };
+            int lx = 8;
+
+            // ---- ICache config row ----
+            pnlConfig.Controls.Add(new Label { Text = "ICache (Read-Only — E2.1/E2.2/E2.4/E2.5):", Left = lx, Top = 4, AutoSize = true, Font = new Font("Segoe UI", 9, FontStyle.Bold), ForeColor = Color.DarkBlue });
+            int iRow1 = 24;
+            pnlConfig.Controls.Add(new Label { Text = "Seturi:", Left = lx, Top = iRow1 + 3, AutoSize = true });
+            _liveISets = new NumericUpDown { Left = lx + 42, Top = iRow1, Width = 55, Minimum = 1, Maximum = 64, Value = simulator.InstructionCache.NumSets };
+            pnlConfig.Controls.Add(_liveISets);
+
+            pnlConfig.Controls.Add(new Label { Text = "Ways:", Left = lx + 105, Top = iRow1 + 3, AutoSize = true });
+            _liveIWays = new NumericUpDown { Left = lx + 147, Top = iRow1, Width = 50, Minimum = 1, Maximum = 16, Value = simulator.InstructionCache.Associativity };
+            pnlConfig.Controls.Add(_liveIWays);
+
+            pnlConfig.Controls.Add(new Label { Text = "Bloc(B):", Left = lx + 205, Top = iRow1 + 3, AutoSize = true });
+            _liveIBlockSize = new NumericUpDown { Left = lx + 255, Top = iRow1, Width = 55, Minimum = 4, Maximum = 256, Value = simulator.InstructionCache.BlockSizeBytes };
+            pnlConfig.Controls.Add(_liveIBlockSize);
+
+            pnlConfig.Controls.Add(new Label { Text = "Înlocuire:", Left = lx + 320, Top = iRow1 + 3, AutoSize = true });
+            _liveIReplacement = new ComboBox { Left = lx + 382, Top = iRow1, Width = 155, DropDownStyle = ComboBoxStyle.DropDownList };
+            _liveIReplacement.Items.AddRange(new object[] { "Random", "LRU (exact)", "LRU Aproximativ (Clock)" });
+            _liveIReplacement.SelectedIndex = simulator.InstructionCache.ReplacementPolicy == ReplacementPolicy.LRU ? 1
+                : simulator.InstructionCache.ReplacementPolicy == ReplacementPolicy.LRUApprox ? 2 : 0;
+            pnlConfig.Controls.Add(_liveIReplacement);
+
+            pnlConfig.Controls.Add(new Label { Text = "Penalty MISS (cicli):", Left = lx + 547, Top = iRow1 + 3, AutoSize = true, Font = new Font("Segoe UI", 8) });
+            _liveICachePenalty = new NumericUpDown { Left = lx + 670, Top = iRow1, Width = 55, Minimum = 0, Maximum = 500, Value = simulator.ICacheMissPenalty };
+            pnlConfig.Controls.Add(_liveICachePenalty);
+
+            var btnApplyI = new Button
+            {
+                Text = "Aplică ICache",
+                Left = lx + 735, Top = iRow1 - 2, Width = 110, Height = 26,
+                BackColor = Color.FromArgb(0x15, 0x65, 0xC0), ForeColor = Color.White, Font = new Font("Segoe UI", 8, FontStyle.Bold)
+            };
+            btnApplyI.Click += (s, e) => ApplyLiveICacheConfig(simulator);
+            pnlConfig.Controls.Add(btnApplyI);
+
+            // ---- Separator ----
+            var sep = new Label { Left = lx, Top = 55, Width = 800, Height = 1, BorderStyle = BorderStyle.Fixed3D };
+            pnlConfig.Controls.Add(sep);
+
+            // ---- DCache config rows ----
+            pnlConfig.Controls.Add(new Label { Text = "DCache (Read/Write — E2.2/E2.3/E2.4/E2.5):", Left = lx, Top = 62, AutoSize = true, Font = new Font("Segoe UI", 9, FontStyle.Bold), ForeColor = Color.DarkGreen });
+            int row1 = 82;
+            pnlConfig.Controls.Add(new Label { Text = "Seturi:", Left = lx, Top = row1 + 3, AutoSize = true });
+            _liveSets = new NumericUpDown { Left = lx + 42, Top = row1, Width = 55, Minimum = 1, Maximum = 64, Value = simulator.DataCache.NumSets };
+            pnlConfig.Controls.Add(_liveSets);
+
+            pnlConfig.Controls.Add(new Label { Text = "Ways:", Left = lx + 105, Top = row1 + 3, AutoSize = true });
+            _liveWays = new NumericUpDown { Left = lx + 147, Top = row1, Width = 50, Minimum = 1, Maximum = 16, Value = simulator.DataCache.Associativity };
+            pnlConfig.Controls.Add(_liveWays);
+
+            pnlConfig.Controls.Add(new Label { Text = "Bloc(B):", Left = lx + 205, Top = row1 + 3, AutoSize = true });
+            _liveBlockSize = new NumericUpDown { Left = lx + 255, Top = row1, Width = 55, Minimum = 4, Maximum = 256, Value = simulator.DataCache.BlockSizeBytes };
+            pnlConfig.Controls.Add(_liveBlockSize);
+
+            int row2 = 116;
+            pnlConfig.Controls.Add(new Label { Text = "Scriere:", Left = lx, Top = row2 + 3, AutoSize = true });
+            _liveWritePolicy = new ComboBox { Left = lx + 48, Top = row2, Width = 110, DropDownStyle = ComboBoxStyle.DropDownList };
+            _liveWritePolicy.Items.AddRange(new object[] { "Write-Through", "Write-Back" });
+            _liveWritePolicy.SelectedIndex = simulator.DataCache.WritePolicy == WritePolicy.WriteBack ? 1 : 0;
+            pnlConfig.Controls.Add(_liveWritePolicy);
+
+            pnlConfig.Controls.Add(new Label { Text = "Miss:", Left = lx + 168, Top = row2 + 3, AutoSize = true });
+            _liveWriteMissPolicy = new ComboBox { Left = lx + 198, Top = row2, Width = 120, DropDownStyle = ComboBoxStyle.DropDownList };
+            _liveWriteMissPolicy.Items.AddRange(new object[] { "Write-Allocate", "No-Write-Alloc" });
+            _liveWriteMissPolicy.SelectedIndex = simulator.DataCache.WriteMissPolicy == WriteMissPolicy.NoWriteAllocate ? 1 : 0;
+            pnlConfig.Controls.Add(_liveWriteMissPolicy);
+
+            pnlConfig.Controls.Add(new Label { Text = "Înlocuire:", Left = lx + 328, Top = row2 + 3, AutoSize = true });
+            _liveReplacement = new ComboBox { Left = lx + 390, Top = row2, Width = 150, DropDownStyle = ComboBoxStyle.DropDownList };
+            _liveReplacement.Items.AddRange(new object[] { "Random", "LRU (exact)", "LRU Aproximativ (Clock)" });
+            _liveReplacement.SelectedIndex = simulator.DataCache.ReplacementPolicy == ReplacementPolicy.LRU ? 1
+                : simulator.DataCache.ReplacementPolicy == ReplacementPolicy.LRUApprox ? 2 : 0;
+            pnlConfig.Controls.Add(_liveReplacement);
+
+            pnlConfig.Controls.Add(new Label { Text = "Penalty MISS (cicli):", Left = lx + 550, Top = row2 + 3, AutoSize = true, Font = new Font("Segoe UI", 8) });
+            _liveDCachePenalty = new NumericUpDown { Left = lx + 673, Top = row2, Width = 55, Minimum = 0, Maximum = 500, Value = simulator.DCacheMissPenalty };
+            pnlConfig.Controls.Add(_liveDCachePenalty);
+
+            var btnApply = new Button
+            {
+                Text = "Aplică DCache",
+                Left = lx + 738, Top = row2 - 2, Width = 110, Height = 26,
+                BackColor = Color.FromArgb(0x2E, 0x7D, 0x32), ForeColor = Color.White, Font = new Font("Segoe UI", 8, FontStyle.Bold)
+            };
+            btnApply.Click += (s, e) => ApplyLiveDCacheConfig(simulator);
+            pnlConfig.Controls.Add(btnApply);
+
+            tab.Controls.Add(pnlConfig);
+
+            // ── Main split: ICache (top) / DCache (bottom) ────────────────────────
+            var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 240 };
+
+            // =======================================================================
+            // SECTIUNEA ICACHE (Corectată)
+            // =======================================================================
+            var grpI = new GroupBox { Text = "Instruction Cache (Set-Asociativ, Read-Only) — E2.1/E2.2/E2.4/E2.5", Dock = DockStyle.Fill, Padding = new Padding(6) };
+            _lblLiveIStats = new Label
+            {
+                Text = "ICache: niciun acces",
+                Dock = DockStyle.Top,
+                Height = 22,
+                Font = new Font("Consolas", 9, FontStyle.Bold),
+                ForeColor = Color.DarkBlue
+            };
+            _lblLiveIDetails = new Label
+            {
+                Text = "",
+                Dock = DockStyle.Top,
+                Height = 18,
+                Font = new Font("Consolas", 8),
+                ForeColor = Color.Gray
+            };
+
+            var splitI = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 550 };
+
+            _dgvLiveILog = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, RowHeadersVisible = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill };
+            _dgvLiveILog.Columns.Add("Nr", "#"); _dgvLiveILog.Columns.Add("Addr", "Adresă instrucțiune"); _dgvLiveILog.Columns.Add("ITag", "Tag"); _dgvLiveILog.Columns.Add("ISet", "Set"); _dgvLiveILog.Columns.Add("IWay", "Way"); _dgvLiveILog.Columns.Add("Result", "Rezultat");
+            _dgvLiveILog.Columns["Nr"].FillWeight = 30; _dgvLiveILog.Columns["ITag"].FillWeight = 60; _dgvLiveILog.Columns["ISet"].FillWeight = 40; _dgvLiveILog.Columns["IWay"].FillWeight = 40; _dgvLiveILog.Columns["Result"].FillWeight = 80;
+
+            _dgvLiveIContents = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, RowHeadersVisible = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill };
+            _dgvLiveIContents.Columns.Add("ISet", "Set #"); _dgvLiveIContents.Columns.Add("IWay", "Way #"); _dgvLiveIContents.Columns.Add("IValid", "Valid"); _dgvLiveIContents.Columns.Add("ITag2", "Tag"); _dgvLiveIContents.Columns.Add("ILRU", "LRU / Clock"); _dgvLiveIContents.Columns.Add("IRef", "RefBit");
+
+            splitI.Panel1.Controls.Add(_dgvLiveILog);
+            splitI.Panel2.Controls.Add(_dgvLiveIContents);
+
+            // REGULA DE AUR WINFORMS: Adăugăm întâi elementele de margine (Top), iar la final cel de mijloc (Fill)
+            grpI.Controls.Add(splitI);             // 3. Ocupă restul spațiului rămas liber (Fill)
+            grpI.Controls.Add(_lblLiveIStats);     // 1. Ocupă primul rând de sus
+            grpI.Controls.Add(_lblLiveIDetails);   // 2. Ocupă al doilea rând sub statistici
+
+            split.Panel1.Controls.Add(grpI);
+
+            // =======================================================================
+            // SECTIUNEA DCACHE (Corectată)
+            // =======================================================================
+            var grpD = new GroupBox { Text = "Data Cache (Set-Asociativ + Politici Scriere) — E2.2/E2.3/E2.4/E2.5", Dock = DockStyle.Fill, Padding = new Padding(6) };
+            _lblLiveDStats = new Label
+            {
+                Text = "DCache: niciun acces",
+                Dock = DockStyle.Top,
+                Height = 16,
+                Font = new Font("Consolas", 9, FontStyle.Bold),
+                ForeColor = Color.DarkGreen
+            };
+            _lblLiveDDetails = new Label
+            {
+                Text = "",
+                Dock = DockStyle.Top,
+                Height = 14,
+                Font = new Font("Consolas", 8),
+                ForeColor = Color.Gray
+            };
+
+            var splitD = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 600 };
+
+            _dgvLiveDLog = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, RowHeadersVisible = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill };
+            _dgvLiveDLog.Columns.Add("Nr", "#"); _dgvLiveDLog.Columns.Add("Op", "Op"); _dgvLiveDLog.Columns.Add("Addr", "Adresă"); _dgvLiveDLog.Columns.Add("Tag", "Tag"); _dgvLiveDLog.Columns.Add("Set", "Set"); _dgvLiveDLog.Columns.Add("Way", "Way"); _dgvLiveDLog.Columns.Add("Result", "Rezultat"); _dgvLiveDLog.Columns.Add("MemAction", "Acțiune Memorie");
+
+            _dgvLiveDContents = new DataGridView { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, RowHeadersVisible = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill };
+            _dgvLiveDContents.Columns.Add("Set", "Set #"); _dgvLiveDContents.Columns.Add("Way", "Way #"); _dgvLiveDContents.Columns.Add("Valid", "Valid"); _dgvLiveDContents.Columns.Add("Dirty", "Dirty"); _dgvLiveDContents.Columns.Add("Tag", "Tag"); _dgvLiveDContents.Columns.Add("LRU", "LRU");
+
+            splitD.Panel1.Controls.Add(_dgvLiveDLog);
+            splitD.Panel2.Controls.Add(_dgvLiveDContents);
+
+            var btnRefresh = new Button
+            {
+                Text = "Refresh manual",
+                Dock = DockStyle.Bottom,
+                Height = 26,
+                BackColor = Color.FromArgb(0x19, 0x76, 0xD2),
+                ForeColor = Color.White
+            };
+            btnRefresh.Click += (s, e) => RefreshLiveTab();
+
+            // Ordinea corectă de adăugare și pentru grupul de Data Cache
+            grpD.Controls.Add(splitD);             // 4. La final (Fill) umple spațiul dintre etichete și buton
+            grpD.Controls.Add(_lblLiveDStats);     // 1. Sus de tot
+            grpD.Controls.Add(_lblLiveDDetails);   // 2. Sub statistici
+            grpD.Controls.Add(btnRefresh);         // 3. Jos de tot (Dock = Bottom)
+
+            split.Panel2.Controls.Add(grpD);
+
+            // =======================================================================
+            // ASAMBLAREA ÎN TAB (Forțarea ordinii corecte de randare prin BringToFront)
+            // =======================================================================
+            tab.Controls.Add(split);
+
+            // Opțional: Dacă pnlConfig (panoul albastru de sus) este adăugat tot în tab, 
+            // rularea acestei comenzi obligă splitterul să se așeze SUB el, fără suprapuneri:
+            split.BringToFront();
+
+        }
+
+        private void ApplyLiveICacheConfig(PipelineSimulator simulator)
+        {
+            try
+            {
+                int numSets = (int)_liveISets.Value;
+                int ways = (int)_liveIWays.Value;
+                int block = (int)_liveIBlockSize.Value;
+
+                if ((numSets & (numSets - 1)) != 0) { MessageBox.Show("Numărul de seturi trebuie să fie putere a lui 2.", "Parametru invalid", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                if ((block & (block - 1)) != 0) { MessageBox.Show("Dimensiunea blocului trebuie să fie putere a lui 2.", "Parametru invalid", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+
+                var rp = _liveIReplacement.SelectedIndex == 1 ? ReplacementPolicy.LRU
+                       : _liveIReplacement.SelectedIndex == 2 ? ReplacementPolicy.LRUApprox
+                       : ReplacementPolicy.Random;
+
+                simulator.ConfigureInstructionCache(numSets, ways, block, rp);
+                simulator.ICacheMissPenalty = (int)_liveICachePenalty.Value;
+                RefreshLiveTab();
+                MessageBox.Show($"ICache reconfigurat: {numSets} seturi × {ways} ways × {block}B\n" +
+                                $"Înlocuire: {rp} | Penalty MISS: {simulator.ICacheMissPenalty} cicli\n\n" +
+                                "Cache resetat. Rulați din nou simularea pentru a vedea noul comportament.",
+                    "ICache reconfigurat", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Eroare configurare", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void ApplyLiveDCacheConfig(PipelineSimulator simulator)
+        {
+            try
+            {
+                int numSets = (int)_liveSets.Value;
+                int ways = (int)_liveWays.Value;
+                int block = (int)_liveBlockSize.Value;
+
+                if ((numSets & (numSets - 1)) != 0) { MessageBox.Show("Numărul de seturi trebuie să fie putere a lui 2.", "Parametru invalid", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                if ((block & (block - 1)) != 0) { MessageBox.Show("Dimensiunea blocului trebuie să fie putere a lui 2.", "Parametru invalid", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+
+                var wp = _liveWritePolicy.SelectedIndex == 1 ? WritePolicy.WriteBack : WritePolicy.WriteThrough;
+                var wmp = _liveWriteMissPolicy.SelectedIndex == 1 ? WriteMissPolicy.NoWriteAllocate : WriteMissPolicy.WriteAllocate;
+                var rp = _liveReplacement.SelectedIndex == 1 ? ReplacementPolicy.LRU
+                       : _liveReplacement.SelectedIndex == 2 ? ReplacementPolicy.LRUApprox
+                       : ReplacementPolicy.Random;
+
+                simulator.ConfigureDataCache(numSets, ways, block, wp, wmp, rp);
+                simulator.DCacheMissPenalty = (int)_liveDCachePenalty.Value;
+                RefreshLiveTab();
+                MessageBox.Show($"DCache reconfigurat: {numSets} seturi × {ways} ways × {block}B\n" +
+                                $"Politică: {wp} / {wmp} / {rp} | Penalty MISS: {simulator.DCacheMissPenalty} cicli\n\n" +
+                                "Cache resetat. Rulați din nou simularea pentru a vedea noul comportament.",
+                    "DCache reconfigurat", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Eroare configurare", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void OnSimulatorCycleCompleted(PipelineState state)
+        {
+            if (IsDisposed) return;
+            if (InvokeRequired)
+            {
+                try { Invoke(new Action(RefreshLiveTab)); }
+                catch (ObjectDisposedException) { }
+                return;
+            }
+            RefreshLiveTab();
+        }
+
+        private void RefreshLiveTab()
+        {
+            if (_simulator == null || _dgvLiveILog == null) return;
+            // Guard: DataGridView must have non-zero client area before adding rows
+            if (_dgvLiveILog.ClientSize.Height <= 0 || _dgvLiveDLog.ClientSize.Height <= 0) return;
+
+            // ── Instruction Cache ───────────────────────────────────────────────
+            var ic = _simulator.InstructionCache;
+            int iStall = _simulator.ICacheStallCycles;
+            _lblLiveIStats.Text = ic.TotalAccesses == 0
+                ? "ICache: niciun acces"
+                : $"ICache: {ic.TotalAccesses} accese | {ic.Hits} hits ({ic.HitRate:P1}) | {ic.Misses} misses → +{iStall} cicli stall (pen={_simulator.ICacheMissPenalty})";
+            _lblLiveIDetails.Text =
+                $"Config: {ic.NumSets} seturi × {ic.Associativity} ways × {ic.BlockSizeBytes}B  |  " +
+                $"Înlocuire: {ic.ReplacementPolicy}  |  MemReads={ic.MemoryReads}";
+
+            if (ic.AccessLog.Count < _dgvLiveILog.Rows.Count) _dgvLiveILog.Rows.Clear();
+            for (int i = _dgvLiveILog.Rows.Count; i < ic.AccessLog.Count; i++)
+            {
+                var a = ic.AccessLog[i];
+                int row = _dgvLiveILog.Rows.Add(
+                    a.Index,
+                    $"0x{a.Address:X4}",
+                    $"0x{a.Tag:X}",
+                    a.SetIndex,
+                    a.WayUsed >= 0 ? a.WayUsed.ToString() : "-",
+                    a.IsHit ? "HIT" : (a.WasEviction ? "MISS (evict)" : "MISS"));
+                _dgvLiveILog.Rows[row].Cells["Result"].Style.BackColor =
+                    a.IsHit ? Color.FromArgb(0xC8, 0xE6, 0xC9) : Color.FromArgb(0xFF, 0xCD, 0xD2);
+            }
+
+            // ICache contents (set/way view)
+            _dgvLiveIContents.Rows.Clear();
+            for (int s = 0; s < ic.NumSets; s++)
+            {
+                var cset = ic.GetSet(s);
+                for (int w = 0; w < cset.Associativity; w++)
+                {
+                    var line = cset.Ways[w];
+                    int row = _dgvLiveIContents.Rows.Add(
+                        s, w,
+                        line.Valid ? "1" : "0",
+                        line.Valid ? $"0x{line.Tag:X}" : "-",
+                        line.Valid ? line.LastUsedCycle.ToString() : "-",
+                        line.Valid ? (line.ReferenceBit ? "1" : "0") : "-");
+                    if (!line.Valid)
+                        _dgvLiveIContents.Rows[row].DefaultCellStyle.ForeColor = Color.LightGray;
+                    else
+                        _dgvLiveIContents.Rows[row].DefaultCellStyle.BackColor = Color.FromArgb(0xE3, 0xF2, 0xFD);
+                }
+            }
+
+            // ── Data Cache ──────────────────────────────────────────────────────
+            var dc = _simulator.DataCache;
+            int dStall = _simulator.DCacheStallCycles;
+            _lblLiveDStats.Text = dc.TotalAccesses == 0
+                ? "DCache: niciun acces"
+                : $"DCache: {dc.TotalAccesses} accese | R={dc.Reads} W={dc.Writes} | {dc.Hits} hits ({dc.HitRate:P1}) | {dc.Misses} misses → +{dStall} cicli stall (pen={_simulator.DCacheMissPenalty})";
+            _lblLiveDDetails.Text =
+                $"Config: {dc.NumSets} sets × {dc.Associativity} ways × {dc.BlockSizeBytes}B  |  " +
+                $"Policy: {dc.WritePolicy}/{dc.WriteMissPolicy}  |  " +
+                $"MemReads={dc.MemoryReads}  MemWrites={dc.MemoryWrites}  WriteBacks={dc.WriteBacks}";
+
+            if (dc.AccessLog.Count < _dgvLiveDLog.Rows.Count) _dgvLiveDLog.Rows.Clear();
+            for (int i = _dgvLiveDLog.Rows.Count; i < dc.AccessLog.Count; i++)
+            {
+                var a = dc.AccessLog[i];
+                string memAction = "";
+                if (a.WroteBackVictim) memAction = "Write-back + load";
+                else if (a.LoadedFromMemory && a.WroteToMemory) memAction = "Load + write-through";
+                else if (a.LoadedFromMemory) memAction = "Load from memory";
+                else if (a.WroteToMemory && !a.IsHit) memAction = "Write (no-allocate)";
+                else if (a.WroteToMemory) memAction = "Write-through";
+                else if (a.MarkedDirty) memAction = "Dirty (write-back)";
+
+                int row = _dgvLiveDLog.Rows.Add(
+                    a.Index,
+                    a.Operation == MemoryOperation.Write ? "W" : "R",
+                    $"0x{a.Address:X4}",
+                    $"0x{a.Tag:X}",
+                    a.SetIndex,
+                    a.WayUsed >= 0 ? a.WayUsed.ToString() : "-",
+                    a.IsHit ? "HIT" : (a.WasEviction ? "MISS (evict)" : "MISS"),
+                    memAction);
+                _dgvLiveDLog.Rows[row].Cells["Result"].Style.BackColor =
+                    a.IsHit ? Color.FromArgb(0xC8, 0xE6, 0xC9) : Color.FromArgb(0xFF, 0xCD, 0xD2);
+            }
+
+            // ── DCache contents (set/way view) ──────────────────────────────────
+            _dgvLiveDContents.Rows.Clear();
+            for (int s = 0; s < dc.NumSets; s++)
+            {
+                var cset = dc.GetSet(s);
+                for (int w = 0; w < cset.Associativity; w++)
+                {
+                    var line = cset.Ways[w];
+                    int row = _dgvLiveDContents.Rows.Add(
+                        s, w,
+                        line.Valid ? "1" : "0",
+                        line.Dirty ? "1" : "0",
+                        line.Valid ? $"0x{line.Tag:X}" : "-",
+                        line.Valid ? line.LastUsedCycle.ToString() : "-");
+                    if (line.Valid && line.Dirty)
+                        _dgvLiveDContents.Rows[row].Cells["Dirty"].Style.BackColor = Color.FromArgb(0xFF, 0xE0, 0xB2);
+                    if (!line.Valid)
+                        _dgvLiveDContents.Rows[row].DefaultCellStyle.ForeColor = Color.LightGray;
+                }
+            }
         }
 
         private void BuildBlackBoxTab(TabPage tab)
