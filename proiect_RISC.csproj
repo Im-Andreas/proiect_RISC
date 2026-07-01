@@ -105,19 +105,5 @@
   <ItemGroup>
     <None Include="App.config" />
   </ItemGroup>
-  <ItemGroup>
-    <Content Include="00_GHID_UTILIZARE.txt" />
-    <Content Include="01_MainWindow_Pipeline.txt" />
-    <Content Include="02_HazardDetection_ValidBits.txt" />
-    <Content Include="03_Scoreboard_Tomasulo.txt" />
-    <Content Include="04_Cache_Hierarchy.txt" />
-    <Content Include="05_VirtualMemory_TLB.txt" />
-    <Content Include="06_Settings_Integration.txt" />
-    <Content Include="07_Models.txt" />
-    <Content Include="08_InstructionParser.txt" />
-    <Content Include="09_PipelineSimulator.txt" />
-    <Content Include="10_MainForm_Logic.txt" />
-    <Content Include="11_DemoPrograms.txt" />
-  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
