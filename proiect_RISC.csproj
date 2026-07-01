@@ -70,13 +70,13 @@
     <Compile Include="Models\CacheAccess.cs" />
     <Compile Include="Models\CacheBlackBox.cs" />
     <Compile Include="Models\CacheLine.cs" />
-    
     <Compile Include="Models\CacheSet.cs" />
     <Compile Include="Models\DemoPrograms.cs" />
     <Compile Include="Models\InstructionParser.cs" />
     <Compile Include="Models\PipelineSimulator.cs" />
     <Compile Include="Models\SetAssociativeCache.cs" />
     <Compile Include="Models\SimulatorModels.cs" />
+    <Compile Include="Models\VirtualMemorySimulator.cs" />
     <Compile Include="Models\WritePolicyCache.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

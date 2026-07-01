@@ -219,7 +219,7 @@ namespace proiect_RISC
                 _activeCacheForm.BringToFront();
             };
             var virtualMemoryViewItem = new ToolStripMenuItem("Virtual Memory View");
-            virtualMemoryViewItem.Click += (s, e) => new VirtualMemoryForm().Show(this);
+            virtualMemoryViewItem.Click += (s, e) => new VirtualMemoryForm(_simulator).Show(this);
             viewItem.DropDownItems.AddRange(new ToolStripItem[] { pipelineViewItem, cacheViewItem, virtualMemoryViewItem, new ToolStripSeparator(), new ToolStripMenuItem("Reset Layout") });
             
             var simItem = new ToolStripMenuItem("Simulation");

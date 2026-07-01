@@ -27,6 +27,8 @@ namespace proiect_RISC.Models
         public WritePolicyCache DataCache { get; } = new WritePolicyCache(4, 2, 16,
             WritePolicy.WriteThrough, WriteMissPolicy.WriteAllocate, ReplacementPolicy.LRU);
 
+        public VirtualMemorySimulator VirtualMemory { get; } = new VirtualMemorySimulator();
+
         // Cache miss penalties (configurable)
         public int ICacheMissPenalty { get; set; } = 10;
         public int DCacheMissPenalty { get; set; } = 10;
@@ -99,6 +101,7 @@ namespace proiect_RISC.Models
             DataMemory.Reset();
             InstructionCache.Reset();
             DataCache.Reset();
+            VirtualMemory.Reset();
             ICacheStallCycles = 0;
             DCacheStallCycles = 0;
             _cacheStallsRemaining = 0;
@@ -170,7 +173,7 @@ namespace proiect_RISC.Models
             if (HazardDetectionEnabled && _stageDEC != null)
             {
                 hazardInfo = DetectHazard(_stageDEC);
-                
+
                 // Stall DOAR daca hazard exista SI nu s-a aplicat forwarding
                 if (hazardInfo.HasHazard && !fwdInfo.IsActive && !_stageDEC.IsForwarded)
                 {
@@ -272,6 +275,7 @@ namespace proiect_RISC.Models
                             break;
                         }
                         bool dHitLoad = DataCache.Read(memAddr);
+                        VirtualMemory.Access(memAddr, MemoryAccessType.DataRead, ClockCycle);
                         instr.ResultValue = DataMemory.Read(memAddr);
                         log.AppendLine($"  DCache {(dHitLoad ? "HIT " : "MISS")} READ  @ MEM[0x{memAddr:X4}] -> {instr.ResultValue.Value}");
                         if (!dHitLoad && DCacheMissPenalty > 0)
@@ -296,6 +300,7 @@ namespace proiect_RISC.Models
                             break;
                         }
                         bool dHitStore = DataCache.Write(memAddr);
+                        VirtualMemory.Access(memAddr, MemoryAccessType.DataWrite, ClockCycle);
                         DataMemory.Write(memAddr, instr.Op2Value.Value);
                         log.AppendLine($"  DCache {(dHitStore ? "HIT " : "MISS")} WRITE @ MEM[0x{memAddr:X4}] <- {instr.Op2Value.Value}");
                         if (!dHitStore && DCacheMissPenalty > 0)
@@ -362,7 +367,7 @@ namespace proiect_RISC.Models
                         uint target = (uint)((int)instr.Address + (instr.Imm ?? 0));
                         PC = target;
                         _programCounter = FindInstructionIndex(PC);
-                        
+
                         if (_programCounter >= 0)
                         {
                             log.AppendLine($"  BRANCH taken -> PC = 0x{PC:X4} (index {_programCounter}) = '{_program[_programCounter].ToShortString()}'");
@@ -373,7 +378,7 @@ namespace proiect_RISC.Models
                             log.AppendLine($"  [DEBUG] Program addresses: {string.Join(", ", _program.Select(i => $"0x{i.Address:X4}:{i.ToShortString()}"))}");
                             log.AppendLine($"  [DEBUG] _programCounter = {_programCounter}, _program.Count = {_program.Count}");
                         }
-                        
+
                         _stageIF = null;
                         _stageDEC = null;
                     }
@@ -507,6 +512,7 @@ namespace proiect_RISC.Models
             instr.EnterCycle = ClockCycle;
             instr.CurrentStage = PipelineStage.IF;
             bool iHit = InstructionCache.Read(instr.Address);
+            VirtualMemory.Access(instr.Address, MemoryAccessType.Instruction, ClockCycle);
             if (!iHit && ICacheMissPenalty > 0)
             {
                 _cacheStallsRemaining = ICacheMissPenalty;
@@ -523,11 +529,11 @@ namespace proiect_RISC.Models
 
         private RISCInstruction CreateNOPBubble()
         {
-            return new RISCInstruction 
-            { 
-                Opcode = Opcode.NOP, 
-                Class = InstructionClass.NOP, 
-                RawText = "NOP (bubble)", 
+            return new RISCInstruction
+            {
+                Opcode = Opcode.NOP,
+                Class = InstructionClass.NOP,
+                RawText = "NOP (bubble)",
                 CurrentStage = PipelineStage.EX,
                 IsBubble = true,
                 ProgramIndex = -1
