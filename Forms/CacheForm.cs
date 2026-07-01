@@ -16,13 +16,14 @@ namespace proiect_RISC.Forms
         private Label _lblTotal, _lblHits, _lblMisses, _lblHitRate, _lblMissRate;
 
         private NumericUpDown _numSets, _numWays, _numBlockSize;
+        private ComboBox _cmbSaReplacement;
         private TextBox _txtSaAddress;
         private DataGridView _dgvSaLog;
         private DataGridView _dgvSaContents;
         private Label _lblSaTotal, _lblSaHits, _lblSaMisses, _lblSaHitRate;
 
         private NumericUpDown _numWpSets, _numWpWays, _numWpBlockSize;
-        private ComboBox _cmbWritePolicy, _cmbWriteMissPolicy;
+        private ComboBox _cmbWritePolicy, _cmbWriteMissPolicy, _cmbWpReplacement;
         private TextBox _txtWpAddress;
         private RadioButton _rbWpRead, _rbWpWrite;
         private DataGridView _dgvWpLog, _dgvWpContents;
@@ -148,15 +149,22 @@ namespace proiect_RISC.Forms
             var lblBlock = new Label { Text = "Block size (bytes, power of 2):", AutoSize = true, Top = 145, Left = 12 };
             _numBlockSize = new NumericUpDown { Top = 165, Left = 12, Width = 100, Minimum = 1, Maximum = 1024, Value = 16 };
 
-            var btnApply = new Button { Text = "Apply Parameters (Reset)", Top = 195, Left = 12, Width = 258 };
+            var lblReplacement = new Label { Text = "Replacement policy:", AutoSize = true, Top = 195, Left = 12 };
+            _cmbSaReplacement = new ComboBox { Top = 215, Left = 12, Width = 258, DropDownStyle = ComboBoxStyle.DropDownList };
+            _cmbSaReplacement.Items.Add("Random");
+            _cmbSaReplacement.Items.Add("LRU (exact)");
+            _cmbSaReplacement.Items.Add("LRU (approximate / clock)");
+            _cmbSaReplacement.SelectedIndex = 0;
+
+            var btnApply = new Button { Text = "Apply Parameters (Reset)", Top = 250, Left = 12, Width = 258 };
             btnApply.Click += (s, e) => ApplySaConfig();
 
-            var lblAccess = new Label { Text = "Address to access:", AutoSize = true, Top = 235, Left = 12 };
-            _txtSaAddress = new TextBox { Top = 255, Left = 12, Width = 160, Text = "0x0100" };
+            var lblAccess = new Label { Text = "Address to access:", AutoSize = true, Top = 290, Left = 12 };
+            _txtSaAddress = new TextBox { Top = 310, Left = 12, Width = 160, Text = "0x0100" };
             var btnSaAccess = new Button
             {
                 Text = "Access",
-                Top = 253,
+                Top = 308,
                 Left = 180,
                 Width = 90,
                 BackColor = Color.FromArgb(0x19, 0x76, 0xD2),
@@ -165,13 +173,13 @@ namespace proiect_RISC.Forms
             btnSaAccess.Click += (s, e) => DoSaAccess();
             _txtSaAddress.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { DoSaAccess(); e.SuppressKeyPress = true; } };
 
-            var btnSaReset = new Button { Text = "Reset Statistics", Top = 290, Left = 12, Width = 258 };
+            var btnSaReset = new Button { Text = "Reset Statistics", Top = 345, Left = 12, Width = 258 };
             btnSaReset.Click += (s, e) => { _saCache.Reset(); RefreshSaUI(); };
 
             pnlLeft.Controls.AddRange(new Control[]
             {
                 lblCfgTitle, lblSets, _numSets, lblWays, _numWays, lblBlock, _numBlockSize,
-                btnApply, lblAccess, _txtSaAddress, btnSaAccess, btnSaReset
+                lblReplacement, _cmbSaReplacement, btnApply, lblAccess, _txtSaAddress, btnSaAccess, btnSaReset
             });
 
             var pnlStats = new Panel { Dock = DockStyle.Bottom, Height = 50, Padding = new Padding(12, 8, 12, 8) };
@@ -253,19 +261,26 @@ namespace proiect_RISC.Forms
             _cmbWriteMissPolicy.Items.Add("No-Write-Allocate");
             _cmbWriteMissPolicy.SelectedIndex = 0;
 
-            var btnApply = new Button { Text = "Apply Parameters (Reset)", Top = 295, Left = 12, Width = 290 };
+            var lblWpReplacement = new Label { Text = "Replacement policy:", AutoSize = true, Top = 295, Left = 12 };
+            _cmbWpReplacement = new ComboBox { Top = 315, Left = 12, Width = 290, DropDownStyle = ComboBoxStyle.DropDownList };
+            _cmbWpReplacement.Items.Add("Random");
+            _cmbWpReplacement.Items.Add("LRU (exact)");
+            _cmbWpReplacement.Items.Add("LRU (approximate / clock)");
+            _cmbWpReplacement.SelectedIndex = 0;
+
+            var btnApply = new Button { Text = "Apply Parameters (Reset)", Top = 350, Left = 12, Width = 290 };
             btnApply.Click += (s, e) => ApplyWpConfig();
 
-            var lblAccess = new Label { Text = "Address to access:", AutoSize = true, Top = 335, Left = 12 };
-            _txtWpAddress = new TextBox { Top = 355, Left = 12, Width = 160, Text = "0x0100" };
+            var lblAccess = new Label { Text = "Address to access:", AutoSize = true, Top = 390, Left = 12 };
+            _txtWpAddress = new TextBox { Top = 410, Left = 12, Width = 160, Text = "0x0100" };
 
-            _rbWpRead = new RadioButton { Text = "Read", Top = 357, Left = 180, Width = 60, Checked = true };
-            _rbWpWrite = new RadioButton { Text = "Write", Top = 357, Left = 245, Width = 60 };
+            _rbWpRead = new RadioButton { Text = "Read", Top = 412, Left = 180, Width = 60, Checked = true };
+            _rbWpWrite = new RadioButton { Text = "Write", Top = 412, Left = 245, Width = 60 };
 
             var btnWpAccess = new Button
             {
                 Text = "Access",
-                Top = 385,
+                Top = 440,
                 Left = 12,
                 Width = 160,
                 BackColor = Color.FromArgb(0x19, 0x76, 0xD2),
@@ -274,18 +289,19 @@ namespace proiect_RISC.Forms
             btnWpAccess.Click += (s, e) => DoWpAccess();
             _txtWpAddress.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { DoWpAccess(); e.SuppressKeyPress = true; } };
 
-            var btnWpReset = new Button { Text = "Reset Statistics", Top = 385, Left = 180, Width = 122 };
+            var btnWpReset = new Button { Text = "Reset Statistics", Top = 440, Left = 180, Width = 122 };
             btnWpReset.Click += (s, e) => { _wpCache.Reset(); RefreshWpUI(); };
 
-            var lblSeq = new Label { Text = "Sequence (R0x100 read, W0x104 write):", AutoSize = true, Top = 425, Left = 12 };
-            var txtSeq = new TextBox { Top = 445, Left = 12, Width = 290, Text = "W0x100, R0x100, W0x110, R0x120, W0x100" };
-            var btnRunSeq = new Button { Text = "Run sequence", Top = 473, Left = 12, Width = 290 };
+            var lblSeq = new Label { Text = "Sequence (R0x100 read, W0x104 write):", AutoSize = true, Top = 480, Left = 12 };
+            var txtSeq = new TextBox { Top = 500, Left = 12, Width = 290, Text = "W0x100, R0x100, W0x110, R0x120, W0x100" };
+            var btnRunSeq = new Button { Text = "Run sequence", Top = 528, Left = 12, Width = 290 };
             btnRunSeq.Click += (s, e) => RunWpSequence(txtSeq.Text);
 
             pnlLeft.Controls.AddRange(new Control[]
             {
                 lblTitle, lblSets, _numWpSets, lblWays, _numWpWays, lblBlock, _numWpBlockSize,
-                lblWritePolicy, _cmbWritePolicy, lblMissPolicy, _cmbWriteMissPolicy, btnApply,
+                lblWritePolicy, _cmbWritePolicy, lblMissPolicy, _cmbWriteMissPolicy,
+                lblWpReplacement, _cmbWpReplacement, btnApply,
                 lblAccess, _txtWpAddress, _rbWpRead, _rbWpWrite, btnWpAccess, btnWpReset,
                 lblSeq, txtSeq, btnRunSeq
             });
@@ -350,7 +366,11 @@ namespace proiect_RISC.Forms
         {
             try
             {
-                _saCache.Configure((int)_numSets.Value, (int)_numWays.Value, (int)_numBlockSize.Value);
+                ReplacementPolicy policy;
+                if (_cmbSaReplacement.SelectedIndex == 1) policy = ReplacementPolicy.LRU;
+                else if (_cmbSaReplacement.SelectedIndex == 2) policy = ReplacementPolicy.LRUApprox;
+                else policy = ReplacementPolicy.Random;
+                _saCache.Configure((int)_numSets.Value, (int)_numWays.Value, (int)_numBlockSize.Value, policy);
                 RefreshSaUI();
             }
             catch (Exception ex)
@@ -429,7 +449,11 @@ namespace proiect_RISC.Forms
             {
                 var policy = _cmbWritePolicy.SelectedIndex == 1 ? WritePolicy.WriteBack : WritePolicy.WriteThrough;
                 var missPolicy = _cmbWriteMissPolicy.SelectedIndex == 1 ? WriteMissPolicy.NoWriteAllocate : WriteMissPolicy.WriteAllocate;
-                _wpCache.Configure((int)_numWpSets.Value, (int)_numWpWays.Value, (int)_numWpBlockSize.Value, policy, missPolicy);
+                ReplacementPolicy replacementPolicy;
+                if (_cmbWpReplacement.SelectedIndex == 1) replacementPolicy = ReplacementPolicy.LRU;
+                else if (_cmbWpReplacement.SelectedIndex == 2) replacementPolicy = ReplacementPolicy.LRUApprox;
+                else replacementPolicy = ReplacementPolicy.Random;
+                _wpCache.Configure((int)_numWpSets.Value, (int)_numWpWays.Value, (int)_numWpBlockSize.Value, policy, missPolicy, replacementPolicy);
                 RefreshWpUI();
             }
             catch (Exception ex)
