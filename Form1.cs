@@ -33,6 +33,7 @@ namespace proiect_RISC
         private CheckBox chkHazardDetection;
         private Button btnNextClock;
         private Button btnRunToEnd;
+        private Button btnPause;
         private Button btnReset;
         private Button btnAddRow;
         private Button btnRemoveRow;
@@ -105,7 +106,8 @@ namespace proiect_RISC
             this.txtPC = new TextBox { Text = "0x0000", Left = 50, Top = 27, Width = 80 };
             this.btnNextClock = new Button { Text = "▶ Next Clock", Left = 10, Top = 60, Width = 150, Height = 35, BackColor = Color.LightGreen, Font = new Font(this.Font, FontStyle.Bold) };
             this.btnRunToEnd = new Button { Text = "⏭ Run to End", Left = 10, Top = 105, Width = 150, Height = 28, BackColor = Color.LightBlue };
-            this.btnReset = new Button { Text = "⏹ Reset", Left = 10, Top = 140, Width = 150, Height = 28, BackColor = Color.LightPink };
+            this.btnPause = new Button { Text = "⏸ Pauză", Left = 10, Top = 140, Width = 150, Height = 28, BackColor = Color.LightYellow, Enabled = false };
+            this.btnReset = new Button { Text = "⏹ Reset", Left = 10, Top = 175, Width = 150, Height = 28, BackColor = Color.LightPink };
             this.chkForwarding = new CheckBox { Text = "Enable Forwarding", Left = 180, Top = 60, Checked = true, AutoSize = true };
             this.chkHazardDetection = new CheckBox { Text = "Hazard Detection (Valid Bits)", Left = 180, Top = 90, Checked = true, AutoSize = true };
             this.lblClockCycle = new Label { Text = "0", Left = 260, Top = 120, AutoSize = true, Font = new Font(this.Font, FontStyle.Bold) };
@@ -113,6 +115,7 @@ namespace proiect_RISC
             
             this.btnNextClock.Click += btnNextClock_Click;
             this.btnRunToEnd.Click += btnRunToEnd_Click;
+            this.btnPause.Click += BtnPause_Click;
             this.btnReset.Click += btnReset_Click;
             this.chkForwarding.CheckedChanged += chkForwarding_CheckedChanged;
             this.chkHazardDetection.CheckedChanged += chkHazardDetection_CheckedChanged;
@@ -120,6 +123,7 @@ namespace proiect_RISC
             grpControl.Controls.Add(this.txtPC);
             grpControl.Controls.Add(this.btnNextClock);
             grpControl.Controls.Add(this.btnRunToEnd);
+            grpControl.Controls.Add(this.btnPause);
             grpControl.Controls.Add(this.btnReset);
             grpControl.Controls.Add(this.chkForwarding);
             grpControl.Controls.Add(this.chkHazardDetection);
@@ -230,17 +234,11 @@ namespace proiect_RISC
             
             var extItem = new ToolStripMenuItem("Extensions");
             var scoreboardItem = new ToolStripMenuItem("Scoreboard Table");
-            scoreboardItem.Click += (s, e) => new SuperscalarForm().Show(this);
+            scoreboardItem.Click += (s, e) => new SuperscalarForm(_simulator, 0).Show(this);
             var tomasuloItem = new ToolStripMenuItem("Tomasulo / Reservation Stations");
-            tomasuloItem.Click += (s, e) => new SuperscalarForm().Show(this);
+            tomasuloItem.Click += (s, e) => new SuperscalarForm(_simulator, 1).Show(this);
             var prefetchItem = new ToolStripMenuItem("Prefetch Buffer");
-            prefetchItem.Click += (s, e) => {
-                var form = new SuperscalarForm();
-                // Select the 3rd tab (Prefetch Buffer)
-                if (form.Controls[0] is TabControl tc && tc.TabCount >= 3)
-                    tc.SelectedIndex = 2;
-                form.Show(this);
-            };
+            prefetchItem.Click += (s, e) => new SuperscalarForm(_simulator, 2).Show(this);
             extItem.DropDownItems.AddRange(new ToolStripItem[] { scoreboardItem, tomasuloItem, prefetchItem });
 
             var helpItem = new ToolStripMenuItem("Help");
@@ -317,6 +315,8 @@ namespace proiect_RISC
                     _autoRunTimer.Stop();
                     btnRunToEnd.Enabled = true;
                     btnNextClock.Enabled = true;
+                    btnPause.Enabled = false;
+                    btnPause.Text = "⏸ Pauză";
                 }
             };
 
@@ -346,6 +346,26 @@ namespace proiect_RISC
             ExecuteStep();
         }
 
+        private void BtnPause_Click(object sender, EventArgs e)
+        {
+            if (_autoRunTimer.Enabled)
+            {
+                // Pause: stop timer without halting
+                _autoRunTimer.Stop();
+                btnPause.Text = "▶ Reia";
+                btnRunToEnd.Enabled = true;
+                btnNextClock.Enabled = true;
+            }
+            else if (!_simulator.IsHalted)
+            {
+                // Resume: restart timer from paused state
+                _autoRunTimer.Start();
+                btnPause.Text = "⏸ Pauză";
+                btnRunToEnd.Enabled = false;
+                btnNextClock.Enabled = false;
+            }
+        }
+
         private void btnRunToEnd_Click(object sender, EventArgs e)
         {
             if (!_isProgramLoaded) LoadProgramFromGrid();
@@ -358,6 +378,8 @@ namespace proiect_RISC
             _autoRunTimer.Start();
             btnRunToEnd.Enabled = false;
             btnNextClock.Enabled = false;
+            btnPause.Enabled = true;
+            btnPause.Text = "⏸ Pauză";
         }
 
         private void btnReset_Click(object sender, EventArgs e)
@@ -388,6 +410,8 @@ namespace proiect_RISC
 
             btnRunToEnd.Enabled = true;
             btnNextClock.Enabled = true;
+            btnPause.Enabled = false;
+            btnPause.Text = "⏸ Pauză";
 
             // Reset cache stats display
             if (lblICacheStats != null) lblICacheStats.Text = "ICache: --";
@@ -841,6 +865,21 @@ namespace proiect_RISC
                                 row.Cells[state.ClockCycle].Style.BackColor = Color.FromArgb(230, 126, 34);
                                 row.Cells[state.ClockCycle].Style.ForeColor = Color.White;
                                 row.Cells[state.ClockCycle].Value = "EX+";
+                                break;
+                            // ── Scoreboard / Tomasulo stage labels ──────────
+                            case "IS":
+                                row.Cells[state.ClockCycle].Style.BackColor = Color.FromArgb(0x29, 0xB6, 0xF6); // cyan
+                                row.Cells[state.ClockCycle].Style.ForeColor = Color.White;
+                                break;
+                            case "waw":
+                                row.Cells[state.ClockCycle].Style.BackColor = Color.FromArgb(0xC0, 0x39, 0x2B); // dark red
+                                row.Cells[state.ClockCycle].Style.ForeColor = Color.White;
+                                row.Cells[state.ClockCycle].Value = "WAW";
+                                break;
+                            case "war":
+                                row.Cells[state.ClockCycle].Style.BackColor = Color.FromArgb(0xD3, 0x54, 0x00); // burnt orange
+                                row.Cells[state.ClockCycle].Style.ForeColor = Color.White;
+                                row.Cells[state.ClockCycle].Value = "WAR";
                                 break;
                             default:
                                 row.Cells[state.ClockCycle].Style.BackColor = Color.White;

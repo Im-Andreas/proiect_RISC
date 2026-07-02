@@ -17,6 +17,7 @@ namespace proiect_RISC.Forms
         private readonly Dictionary<FunctionalUnitType, NumericUpDown> _nudCount   = new Dictionary<FunctionalUnitType, NumericUpDown>();
         private readonly Dictionary<FunctionalUnitType, NumericUpDown> _nudLatency = new Dictionary<FunctionalUnitType, NumericUpDown>();
         private NumericUpDown _nudIssueWidth;
+        private ComboBox _cmbExecModel;
 
         public SpecializedUnitsForm() : this(null) { }
 
@@ -174,15 +175,24 @@ namespace proiect_RISC.Forms
                 Padding = new Padding(12)
             };
 
+            // Execution model
+            var grpEM = new GroupBox { Text = "Model de execuție", Left = 8, Top = 8, Width = 800, Height = 72 };
+            MakeLabel(grpEM, "Algoritm:", 12, 26);
+            _cmbExecModel = new ComboBox { Left = 100, Top = 22, Width = 200, DropDownStyle = ComboBoxStyle.DropDownList };
+            _cmbExecModel.Items.AddRange(new object[] { "InOrder (in-ordine)", "Scoreboard (tabela de marcaj)", "Tomasulo (stații de rezervare)" });
+            _cmbExecModel.SelectedIndex = (int)(_simulator?.ExecutionModel ?? ExecutionModel.InOrder);
+            grpEM.Controls.Add(_cmbExecModel);
+            grpEM.Controls.Add(new Label { Text = "Scoreboard=OoO execuție cu WAW/WAR  |  Tomasulo=OoO cu RAT+CDB (fără WAW/WAR)", Left = 312, Top = 26, AutoSize = true, ForeColor = Color.Gray, Font = new Font(Font.FontFamily, 7) });
+
             // Issue width
-            var grpIW = new GroupBox { Text = "Superscalaritate — lățime emisie (IssueWidth)", Left = 8, Top = 8, Width = 640, Height = 68 };
+            var grpIW = new GroupBox { Text = "Superscalaritate — lățime emisie (IssueWidth)", Left = 8, Top = 86, Width = 640, Height = 68 };
             MakeLabel(grpIW, "Instrucțiuni emise per ciclu:", 12, 24);
             int curIW = _simulator?.IssueWidth ?? 1;
             _nudIssueWidth = new NumericUpDown { Left = 230, Top = 20, Width = 70, Minimum = 1, Maximum = 4, Value = curIW };
             grpIW.Controls.Add(_nudIssueWidth);
             grpIW.Controls.Add(new Label { Text = "(1 = scalar, 2-4 = superscalar)", Left = 310, Top = 24, AutoSize = true, ForeColor = Color.Gray });
 
-            grp.Top = 82;
+            grp.Top = 162;
             grp.Height = 340;
 
             // Header
@@ -238,14 +248,17 @@ namespace proiect_RISC.Forms
 
             outer.Controls.Add(grp);
             outer.Controls.Add(grpIW);
+            outer.Controls.Add(grpEM);
 
             // Legend
-            var grpLeg = new GroupBox { Text = "Legendă diagrama spațiu-timp", Left = 8, Top = 360, Width = 640, Height = 100, Padding = new Padding(12) };
-            AddLegendCell(grpLeg, "EX",  Color.Orange,                   Color.Black, "EX 1 ciclu (ADD/LD/BR)",  10, 24);
-            AddLegendCell(grpLeg, "EX+", Color.FromArgb(230, 126, 34),   Color.White, "EX extra cicli (MUL...)",  160, 24);
-            AddLegendCell(grpLeg, "S",   Color.FromArgb(255, 100, 100),  Color.White, "Stall hazard RAW",         310, 24);
-            AddLegendCell(grpLeg, "CS",  Color.FromArgb(255, 165, 0),    Color.White, "Cache stall",              460, 24);
-            AddLegendCell(grpLeg, "STRUCT", Color.FromArgb(255, 100, 100), Color.White, "Stall structural UF",    10, 56);
+            var grpLeg = new GroupBox { Text = "Legendă diagrama spațiu-timp", Left = 8, Top = 510, Width = 800, Height = 120, Padding = new Padding(12) };
+            AddLegendCell(grpLeg, "EX",  Color.Orange,                   Color.Black, "EX 1 ciclu (ADD/LD/BR)",  10, 20);
+            AddLegendCell(grpLeg, "EX+", Color.FromArgb(230, 126, 34),   Color.White, "EX extra cicli (MUL...)",  210, 20);
+            AddLegendCell(grpLeg, "S",   Color.FromArgb(255, 100, 100),  Color.White, "Stall hazard RAW/Struct",  410, 20);
+            AddLegendCell(grpLeg, "CS",  Color.FromArgb(255, 165, 0),    Color.White, "Cache stall",              610, 20);
+            AddLegendCell(grpLeg, "IS",  Color.FromArgb(0x29, 0xB6, 0xF6), Color.White, "Issued (Scoreboard/Tom)", 10, 52);
+            AddLegendCell(grpLeg, "WAW", Color.FromArgb(0xC0, 0x39, 0x2B), Color.White, "WAW stall (Scoreboard)", 210, 52);
+            AddLegendCell(grpLeg, "WAR", Color.FromArgb(0xD3, 0x54, 0x00), Color.White, "WAR stall (Scoreboard)", 410, 52);
             outer.Controls.Add(grpLeg);
 
             tab.Controls.Add(outer);
@@ -259,9 +272,12 @@ namespace proiect_RISC.Forms
                 Fu.Configure(t, (int)_nudCount[t].Value, (int)_nudLatency[t].Value);
             if (_simulator != null && _nudIssueWidth != null)
                 _simulator.IssueWidth = (int)_nudIssueWidth.Value;
+            if (_simulator != null && _cmbExecModel != null)
+                _simulator.ExecutionModel = (ExecutionModel)_cmbExecModel.SelectedIndex;
             RebuildGanttRows();
             MessageBox.Show(
                 "Configurarea a fost aplicată.\n" +
+                "Model execuție: " + (_simulator?.ExecutionModel.ToString() ?? "InOrder") + "\n" +
                 "IssueWidth = " + (_simulator?.IssueWidth ?? 1) + ((_simulator?.IssueWidth ?? 1) > 1 ? " (superscalar)" : " (scalar)") + "\n" +
                 "Resetează și rulează programul din nou pentru a vedea efectele.",
                 "Aplicat", MessageBoxButtons.OK, MessageBoxIcon.Information);
