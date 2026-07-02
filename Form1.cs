@@ -219,7 +219,9 @@ namespace proiect_RISC
             };
             var virtualMemoryViewItem = new ToolStripMenuItem("Virtual Memory View");
             virtualMemoryViewItem.Click += (s, e) => new VirtualMemoryForm(_simulator).Show(this);
-            viewItem.DropDownItems.AddRange(new ToolStripItem[] { pipelineViewItem, cacheViewItem, virtualMemoryViewItem, new ToolStripSeparator(), new ToolStripMenuItem("Reset Layout") });
+            var fuViewItem = new ToolStripMenuItem("Unități Funcționale (Superscalar)");
+            fuViewItem.Click += (s, e) => new SpecializedUnitsForm(_simulator).Show(this);
+            viewItem.DropDownItems.AddRange(new ToolStripItem[] { pipelineViewItem, cacheViewItem, virtualMemoryViewItem, fuViewItem, new ToolStripSeparator(), new ToolStripMenuItem("Reset Layout") });
             
             var simItem = new ToolStripMenuItem("Simulation");
             var settingsItem = new ToolStripMenuItem("Settings...");
@@ -834,6 +836,11 @@ namespace proiect_RISC
                                 row.Cells[state.ClockCycle].Style.BackColor = Color.FromArgb(142, 68, 173);
                                 row.Cells[state.ClockCycle].Style.ForeColor = Color.White;
                                 row.Cells[state.ClockCycle].Value = "VS";
+                                break;
+                            case "ex_multi":
+                                row.Cells[state.ClockCycle].Style.BackColor = Color.FromArgb(230, 126, 34);
+                                row.Cells[state.ClockCycle].Style.ForeColor = Color.White;
+                                row.Cells[state.ClockCycle].Value = "EX+";
                                 break;
                             default:
                                 row.Cells[state.ClockCycle].Style.BackColor = Color.White;

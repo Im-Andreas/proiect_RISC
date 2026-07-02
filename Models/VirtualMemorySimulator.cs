@@ -299,8 +299,8 @@ namespace proiect_RISC.Models
     public class MmuLatencyConfig
     {
         public int TlbCycles { get; set; } = 1;
-        public int CacheCycles { get; set; } = 1;
-        public int MainMemoryCycles { get; set; } = 100;
+        public int CacheCycles { get; set; } = 3;
+        public int MainMemoryCycles { get; set; } = 8;
     }
 
     public class MemoryAccessResult

@@ -64,6 +64,9 @@
     <Compile Include="Forms\SuperscalarForm.cs">
       <SubType>Form</SubType>
     </Compile>
+    <Compile Include="Forms\SpecializedUnitsForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
     <Compile Include="Forms\VirtualMemoryForm.cs">
       <SubType>Form</SubType>
     </Compile>
@@ -76,6 +79,7 @@
     <Compile Include="Models\PipelineSimulator.cs" />
     <Compile Include="Models\SetAssociativeCache.cs" />
     <Compile Include="Models\SimulatorModels.cs" />
+    <Compile Include="Models\FunctionalUnits.cs" />
     <Compile Include="Models\VirtualMemorySimulator.cs" />
     <Compile Include="Models\WritePolicyCache.cs" />
     <Compile Include="Program.cs" />

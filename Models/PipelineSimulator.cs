@@ -11,59 +11,57 @@ namespace proiect_RISC.Models
         private int _programCounter;
         public uint PC { get; private set; }
 
+        // Single-slot IF/DEC for display; EX replaced by buffers
         private RISCInstruction _stageIF;
         private RISCInstruction _stageDEC;
-        private RISCInstruction _stageEX;
         private RISCInstruction _stageMEM;
         private RISCInstruction _stageWB;
+
+        // ── Superscalar structures ────────────────────────────────────────────
+        public int IssueWidth { get; set; } = 1;
+        private readonly List<RISCInstruction> _issueBuffer    = new List<RISCInstruction>();
+        private readonly List<RISCInstruction> _inFlightEX     = new List<RISCInstruction>();
+        private readonly Dictionary<RISCInstruction, int> _exEntryCycle = new Dictionary<RISCInstruction, int>();
+        private readonly List<RISCInstruction> _completionList = new List<RISCInstruction>(); // completed EX, waiting MEM
 
         public RegisterFile Registers { get; } = new RegisterFile();
         public Memory DataMemory { get; } = new Memory();
 
-        // ICache: read-only, no write policy — only set-associativity and replacement matter (E2.1/E2.2/E2.4/E2.5)
         public WritePolicyCache InstructionCache { get; } = new WritePolicyCache(4, 1, 16,
             WritePolicy.WriteThrough, WriteMissPolicy.NoWriteAllocate, ReplacementPolicy.LRU);
-
         public WritePolicyCache DataCache { get; } = new WritePolicyCache(4, 2, 16,
             WritePolicy.WriteThrough, WriteMissPolicy.WriteAllocate, ReplacementPolicy.LRU);
-
         public VirtualMemorySimulator VirtualMemory { get; } = new VirtualMemorySimulator();
 
-        // Cache miss penalties (configurable)
         public int ICacheMissPenalty { get; set; } = 10;
         public int DCacheMissPenalty { get; set; } = 10;
-
-        // Cache stall cycle counters (metrics)
         public int ICacheStallCycles { get; private set; } = 0;
         public int DCacheStallCycles { get; private set; } = 0;
 
-        // VM/TLB stall cycle counters (metrics)
+        public FunctionalUnitSet FunctionalUnits { get; } = new FunctionalUnitSet();
+        public int FuStructuralStallCycles { get; private set; } = 0;
+        public int FuMultiCycleExtraCycles { get; private set; } = 0;
+
         public bool VmStallsEnabled { get; set; } = true;
         public int VmInstStallCycles { get; private set; } = 0;
         public int VmDataStallCycles { get; private set; } = 0;
 
-        // Internal cache stall state
         private int _cacheStallsRemaining = 0;
         private bool _cacheStallIsICache = false;
         private RISCInstruction _cacheStallInstruction = null;
         private bool _dcacheMissPending = false;
 
-        // Internal VM/TLB stall state
         private int _vmStallsRemaining = 0;
         private bool _vmStallIsInst = false;
         private RISCInstruction _vmStallInstruction = null;
         private bool _vmMissPending = false;
 
         public void ConfigureInstructionCache(int numSets, int assoc, int blockSize, ReplacementPolicy replacement)
-        {
-            InstructionCache.Configure(numSets, assoc, blockSize, WritePolicy.WriteThrough, WriteMissPolicy.NoWriteAllocate, replacement);
-        }
+            => InstructionCache.Configure(numSets, assoc, blockSize, WritePolicy.WriteThrough, WriteMissPolicy.NoWriteAllocate, replacement);
 
         public void ConfigureDataCache(int numSets, int assoc, int blockSize,
             WritePolicy writePolicy, WriteMissPolicy writeMissPolicy, ReplacementPolicy replacement)
-        {
-            DataCache.Configure(numSets, assoc, blockSize, writePolicy, writeMissPolicy, replacement);
-        }
+            => DataCache.Configure(numSets, assoc, blockSize, writePolicy, writeMissPolicy, replacement);
 
         public int ClockCycle { get; private set; } = 0;
         public int TotalStalls { get; private set; } = 0;
@@ -77,6 +75,10 @@ namespace proiect_RISC.Models
         public List<SpaceTimeEntry> SpaceTimeTable { get; } = new List<SpaceTimeEntry>();
 
         public event Action<PipelineState> CycleCompleted;
+
+        // ── Read-only display helpers ─────────────────────────────────────────
+        public RISCInstruction DisplayEX  => _inFlightEX.Count  > 0 ? _inFlightEX[0]  : null;
+        public IReadOnlyList<RISCInstruction> InFlightEX => _inFlightEX;
 
         public void LoadProgram(List<RISCInstruction> program, uint startAddress)
         {
@@ -107,7 +109,11 @@ namespace proiect_RISC.Models
             IsRunning = false;
             _programCounter = 0;
             PC = 0;
-            _stageIF = _stageDEC = _stageEX = _stageMEM = _stageWB = null;
+            _stageIF = _stageDEC = _stageMEM = _stageWB = null;
+            _issueBuffer.Clear();
+            _inFlightEX.Clear();
+            _exEntryCycle.Clear();
+            _completionList.Clear();
             Registers.Reset();
             DataMemory.Reset();
             InstructionCache.Reset();
@@ -115,6 +121,9 @@ namespace proiect_RISC.Models
             VirtualMemory.Reset();
             ICacheStallCycles = 0;
             DCacheStallCycles = 0;
+            FunctionalUnits.Reset();
+            FuStructuralStallCycles = 0;
+            FuMultiCycleExtraCycles = 0;
             VmInstStallCycles = 0;
             VmDataStallCycles = 0;
             _cacheStallsRemaining = 0;
@@ -135,137 +144,243 @@ namespace proiect_RISC.Models
             var log = new StringBuilder();
             log.AppendLine($"=== Ciclu {ClockCycle} ===");
 
-            // ── VM/TLB stall handler — freeze pipeline, count cycles ─────────────
+            // ── VM/TLB stall handler ──────────────────────────────────────────
             if (_vmStallsRemaining > 0)
             {
                 _vmStallsRemaining--;
                 if (_vmStallIsInst) VmInstStallCycles++; else VmDataStallCycles++;
                 TotalStalls++;
                 string vmWhich = _vmStallIsInst ? "IF/TLB" : "MEM/TLB";
-                log.AppendLine($"[TLB STALL] {vmWhich} @ 0x{_vmStallInstruction?.Address:X4} — traducere adresă ({_vmStallsRemaining} cicli rămași)");
-                if (_vmStallInstruction != null)
-                    RecordSpaceTime(_vmStallInstruction, ClockCycle, "vm");
+                log.AppendLine($"[TLB STALL] {vmWhich} @ 0x{_vmStallInstruction?.Address:X4} ({_vmStallsRemaining} cicli rămași)");
+                if (_vmStallInstruction != null) RecordSpaceTime(_vmStallInstruction, ClockCycle, "vm");
+                foreach (var inf in _inFlightEX) RecordSpaceTime(inf, ClockCycle, "ex_multi");
                 var vmS = BuildSnapshot(log.ToString(), HazardInfo.None, ForwardingInfo.None);
-                History.Add(vmS);
-                CycleCompleted?.Invoke(vmS);
+                History.Add(vmS); CycleCompleted?.Invoke(vmS);
                 return vmS;
             }
 
-            // ── Cache stall handler — freeze pipeline, count cycles ─────────────
+            // ── Cache stall handler ───────────────────────────────────────────
             if (_cacheStallsRemaining > 0)
             {
                 _cacheStallsRemaining--;
                 if (_cacheStallIsICache) ICacheStallCycles++; else DCacheStallCycles++;
                 string which = _cacheStallIsICache ? "ICache" : "DCache";
-                log.AppendLine($"[CACHE STALL] {which} MISS @ 0x{_cacheStallInstruction?.Address:X4} — așteptare memorie ({_cacheStallsRemaining} cicli rămași)");
-                if (_cacheStallInstruction != null)
-                    RecordSpaceTime(_cacheStallInstruction, ClockCycle, "cache");
+                log.AppendLine($"[CACHE STALL] {which} MISS @ 0x{_cacheStallInstruction?.Address:X4} ({_cacheStallsRemaining} cicli rămași)");
+                if (_cacheStallInstruction != null) RecordSpaceTime(_cacheStallInstruction, ClockCycle, "cache");
+                foreach (var inf in _inFlightEX) RecordSpaceTime(inf, ClockCycle, "ex_multi");
                 var cStall = BuildSnapshot(log.ToString(), HazardInfo.None, ForwardingInfo.None);
-                History.Add(cStall);
-                CycleCompleted?.Invoke(cStall);
+                History.Add(cStall); CycleCompleted?.Invoke(cStall);
                 return cStall;
             }
 
+            // ── 1. WB: write back ─────────────────────────────────────────────
             ExecuteWB(log);
+
+            // ── 2. MEM: process memory stage ──────────────────────────────────
             ExecuteMEM(log);
 
-            // ── VM stall triggered in MEM stage — prevent pipeline advance ────────
+            // ── VM/DCache miss triggered in MEM → stall before advancing ──────
             if (_vmMissPending)
             {
                 _vmMissPending = false;
-                if (_vmStallInstruction != null)
-                    RecordSpaceTime(_vmStallInstruction, ClockCycle, "vm");
-                log.AppendLine($"[TLB STALL] MEM/TLB MISS @ 0x{_vmStallInstruction?.Address:X4} — +{_vmStallsRemaining} cicli stall inserați");
+                if (_vmStallInstruction != null) RecordSpaceTime(_vmStallInstruction, ClockCycle, "vm");
+                log.AppendLine($"[TLB STALL] MEM/TLB MISS → +{_vmStallsRemaining} cicli");
                 var vmP = BuildSnapshot(log.ToString(), HazardInfo.None, ForwardingInfo.None);
-                History.Add(vmP);
-                CycleCompleted?.Invoke(vmP);
+                History.Add(vmP); CycleCompleted?.Invoke(vmP);
                 return vmP;
             }
-
-            // ── DCache stall check — prevent pipeline advance when miss triggered ─
             if (_dcacheMissPending)
             {
                 _dcacheMissPending = false;
                 DCacheStallCycles++;
-                _stageWB = null; // WB already ran this cycle; clear to prevent re-execution
-                if (_cacheStallInstruction != null)
-                    RecordSpaceTime(_cacheStallInstruction, ClockCycle, "cache");
-                log.AppendLine($"[CACHE STALL] DCache MISS @ 0x{_cacheStallInstruction?.Address:X4} — +{DCacheMissPenalty} cicli stall inserați");
+                _stageWB = null;
+                if (_cacheStallInstruction != null) RecordSpaceTime(_cacheStallInstruction, ClockCycle, "cache");
+                log.AppendLine($"[CACHE STALL] DCache MISS → +{DCacheMissPenalty} cicli");
                 var dStall = BuildSnapshot(log.ToString(), HazardInfo.None, ForwardingInfo.None);
-                History.Add(dStall);
-                CycleCompleted?.Invoke(dStall);
+                History.Add(dStall); CycleCompleted?.Invoke(dStall);
                 return dStall;
             }
 
-            // CRITICAL: ExecuteEX PRIMUL - calculeaza ResultValue pentru ca forwarding-ul sa-l poata folosi!
-            ExecuteEX(log);
+            // ── 3. Advance MEM: WB ← MEM, MEM ← completion list ─────────────
+            _stageWB = _stageMEM;
+            _stageMEM = _completionList.Count > 0 ? _completionList[0] : null;
+            if (_completionList.Count > 0) _completionList.RemoveAt(0);
 
-            // Citește operanzii din RegisterFile (fără invalidare încă!)
-            if (_stageDEC != null)
+            // ── 4. Tick FUs → collect completions ─────────────────────────────
+            FunctionalUnits.RecordOccupancy(ClockCycle);
+            var justCompleted = FunctionalUnits.TickUnits();
+            foreach (var c in justCompleted)
             {
-                if (_stageDEC.Rs1.HasValue && _stageDEC.Rs1.Value >= 0) _stageDEC.Op1Value = Registers.Read(_stageDEC.Rs1.Value);
-                if (_stageDEC.Rs2.HasValue && _stageDEC.Rs2.Value >= 0) _stageDEC.Op2Value = Registers.Read(_stageDEC.Rs2.Value);
+                _inFlightEX.Remove(c);
+                _exEntryCycle.Remove(c);
+                _completionList.Add(c);
+                log.AppendLine($"[EX DONE] '{c.ToShortString()}' completes EX → MEM queue");
             }
 
-            // Forwarding: suprascrie Op1Value/Op2Value cu valori forward-ate (EX/MEM au deja ResultValue)
-            ForwardingInfo fwdInfo = ForwardingInfo.None;
-            if (ForwardingEnabled && _stageDEC != null && (_stageEX != null || _stageMEM != null))
-                fwdInfo = CheckAndApplyForwarding(log);
+            // Count extra EX cycles (instructions still in flight past their first cycle)
+            foreach (var inf in _inFlightEX)
+                FuMultiCycleExtraCycles++;
 
-            // Hazard detection
-            HazardInfo hazardInfo = HazardInfo.None;
-            bool stallInserted = false;
-            if (HazardDetectionEnabled && _stageDEC != null)
+            // ── 5. Dispatch up to IssueWidth from issue buffer ─────────────────
+            HazardInfo lastHazard = HazardInfo.None;
+            ForwardingInfo lastFwd = ForwardingInfo.None;
+            bool anyStallThisCycle = false;
+            var dispatchedThisCycle = new List<RISCInstruction>();
+
+            int slot = 0;
+            while (slot < _issueBuffer.Count && dispatchedThisCycle.Count < IssueWidth)
             {
-                hazardInfo = DetectHazard(_stageDEC);
+                var candidate = _issueBuffer[slot];
 
-                // Stall DOAR daca hazard exista SI nu s-a aplicat forwarding
-                if (hazardInfo.HasHazard && !fwdInfo.IsActive && !_stageDEC.IsForwarded)
+                // Bubble: pass through
+                if (candidate == null || candidate.IsBubble)
                 {
-                    stallInserted = true;
-                    TotalStalls++;
-                    log.AppendLine($"[STALL] Hazard {hazardInfo.HazardType} pe {hazardInfo.ConflictRegister}: '{hazardInfo.Consumer?.ToShortString()}' asteapta '{hazardInfo.Producer?.ToShortString()}'");
-                    RecordSpaceTime(_stageDEC, ClockCycle, "stall");
-                    RecordSpaceTime(_stageIF, ClockCycle, "stall");
+                    _issueBuffer.RemoveAt(slot);
+                    continue;
                 }
+
+                // Read operands fresh
+                if (candidate.Rs1.HasValue && candidate.Rs1.Value >= 0)
+                    candidate.Op1Value = Registers.Read(candidate.Rs1.Value);
+                if (candidate.Rs2.HasValue && candidate.Rs2.Value >= 0)
+                    candidate.Op2Value = Registers.Read(candidate.Rs2.Value);
+
+                // Co-issue RAW: can't read a register written by an instruction dispatched THIS cycle
+                bool coIssueRaw = dispatchedThisCycle.Any(d =>
+                    d.GetWriteRegister() >= 0 &&
+                    candidate.GetReadRegisters().Contains(d.GetWriteRegister()));
+                if (coIssueRaw)
+                {
+                    // Stop: in-order issue — can't skip
+                    if (!anyStallThisCycle)
+                    {
+                        TotalStalls++;
+                        anyStallThisCycle = true;
+                        RecordSpaceTime(candidate, ClockCycle, "stall");
+                        RecordSpaceTime(_stageIF, ClockCycle, "stall");
+                        log.AppendLine($"[CO-ISSUE RAW] '{candidate.ToShortString()}' depinde de o instrucțiune co-emisă → stall");
+                    }
+                    break;
+                }
+
+                // Apply forwarding from completion list and _stageMEM
+                candidate.IsForwarded = false;
+                ForwardingInfo fwd = ForwardingInfo.None;
+                if (ForwardingEnabled)
+                    fwd = ApplyForwardingForDispatch(candidate, log);
+
+                // Detect RAW hazard
+                HazardInfo hazard = HazardInfo.None;
+                if (HazardDetectionEnabled)
+                    hazard = DetectHazard(candidate);
+
+                if (hazard.HasHazard && !candidate.IsForwarded)
+                {
+                    if (!anyStallThisCycle)
+                    {
+                        TotalStalls++;
+                        anyStallThisCycle = true;
+                        RecordSpaceTime(candidate, ClockCycle, "stall");
+                        RecordSpaceTime(_stageIF, ClockCycle, "stall");
+                        log.AppendLine($"[STALL] RAW {hazard.ConflictRegister}: '{candidate.ToShortString()}' → '{hazard.Producer?.ToShortString()}'");
+                        lastHazard = hazard;
+                    }
+                    break; // in-order: stop dispatching
+                }
+
+                // Structural hazard: FU availability
+                var reqUnit = FunctionalUnitSet.GetRequiredUnit(candidate);
+                if (reqUnit.HasValue && !FunctionalUnits.HasAvailableUnit(reqUnit.Value))
+                {
+                    if (!anyStallThisCycle)
+                    {
+                        TotalStalls++;
+                        FuStructuralStallCycles++;
+                        anyStallThisCycle = true;
+                        RecordSpaceTime(candidate, ClockCycle, "stall");
+                        RecordSpaceTime(_stageIF, ClockCycle, "stall");
+                        log.AppendLine($"[STRUCTURAL] Toate unitățile {reqUnit.Value} ocupate → stall '{candidate.ToShortString()}'");
+                    }
+                    break; // in-order: stop
+                }
+
+                // ── Dispatch! ──────────────────────────────────────────────────
+                if (candidate.GetWriteRegister() >= 0)
+                    Registers.InvalidateRegister(candidate.GetWriteRegister());
+
+                var unit = FunctionalUnits.TryDispatch(candidate);
+                if (unit == null)
+                {
+                    // Shouldn't happen after HasAvailableUnit check, but defensive
+                    break;
+                }
+
+                _issueBuffer.RemoveAt(slot);
+                _inFlightEX.Add(candidate);
+                _exEntryCycle[candidate] = ClockCycle;
+                dispatchedThisCycle.Add(candidate);
+                if (fwd.IsActive) lastFwd = fwd;
+
+                // Compute result immediately (simplified model)
+                ExecuteEXInstruction(candidate, log);
+
+                int lat = unit.CyclesLeft;
+                log.AppendLine($"[DISPATCH] '{candidate.ToShortString()}' → {unit.UnitType}-{unit.UnitIndex} (lat={lat})");
+
+                // Single-cycle: tick immediately so unit is freed next cycle
+                // (TickUnits at step 4 already ran; newly dispatched units will be ticked next cycle)
+
+                // After branch dispatch: flush pipeline
+                if (candidate.Opcode == Opcode.JMP ||
+                    candidate.Opcode == Opcode.BEQ || candidate.Opcode == Opcode.BNE ||
+                    candidate.Opcode == Opcode.BGT || candidate.Opcode == Opcode.BLT)
+                {
+                    // Flush IF, DEC, and remaining issue buffer (instructions fetched speculatively)
+                    _stageIF = null;
+                    _stageDEC = null;
+                    _issueBuffer.Clear();
+                    break; // stop dispatching after branch
+                }
+
+                // Don't increment slot — we removed the element
             }
 
-            if (!stallInserted)
+            // ── 6. Move _stageDEC → issue buffer, advance IF/DEC ──────────────
+            if (_stageDEC != null && !_stageDEC.IsBubble)
+                _issueBuffer.Add(_stageDEC);
+
+            _stageDEC = _stageIF;
+            _stageIF = FetchNextInstruction(log);
+
+            // ── 7. Record space-time ───────────────────────────────────────────
+            RecordSpaceTime(_stageIF, ClockCycle, "IF");
+            RecordSpaceTime(_stageDEC, ClockCycle, "DEC");
+            foreach (var inf in _inFlightEX)
             {
-                // INVALIDEAZĂ registrul de destinație DOAR când instrucțiunea avansează la EX!
-                if (_stageDEC != null && _stageDEC.GetWriteRegister() >= 0)
-                    Registers.InvalidateRegister(_stageDEC.GetWriteRegister());
-
-                _stageWB = _stageMEM;
-                _stageMEM = _stageEX;
-                _stageEX = _stageDEC;
-                _stageDEC = _stageIF;
-                _stageIF = FetchNextInstruction(log);
+                bool isFirst = _exEntryCycle.TryGetValue(inf, out int ec) && ec == ClockCycle;
+                RecordSpaceTime(inf, ClockCycle, isFirst ? "EX" : "ex_multi");
             }
-            else
-            {
-                _stageWB = _stageMEM;
-                _stageMEM = _stageEX;
-                _stageEX = CreateNOPBubble();
-            }
+            RecordSpaceTime(_stageMEM, ClockCycle, "MEM");
+            RecordSpaceTime(_stageWB, ClockCycle, "WB");
 
-            RecordSpaceTimeAll(ClockCycle);
-
-            // HALT se opreste doar dupa ce termina WB
+            // ── 8. Check halt / end ───────────────────────────────────────────
             if (_stageWB != null && _stageWB.Opcode == Opcode.HALT)
             {
                 IsHalted = true;
-                log.AppendLine("[HALT] Instructiunea HALT a terminat WB; simulatorul se opreste.");
+                log.AppendLine("[HALT] Instructiunea HALT a terminat WB.");
             }
 
-            if (_stageIF == null && _stageDEC == null && _stageEX == null && _stageMEM == null && _stageWB == null)
+            bool allEmpty = _stageIF == null && _stageDEC == null &&
+                            _issueBuffer.Count == 0 && _inFlightEX.Count == 0 &&
+                            _completionList.Count == 0 && _stageMEM == null && _stageWB == null;
+            if (allEmpty)
             {
                 IsRunning = false;
                 IsHalted = true;
                 log.AppendLine("[END] Pipeline gol; program terminat.");
             }
 
-            var state = BuildSnapshot(log.ToString(), hazardInfo, fwdInfo);
+            var state = BuildSnapshot(log.ToString(), lastHazard, lastFwd);
             History.Add(state);
             CycleCompleted?.Invoke(state);
             return state;
@@ -278,13 +393,13 @@ namespace proiect_RISC.Models
             return states;
         }
 
+        // ── Stage handlers ────────────────────────────────────────────────────
+
         private void ExecuteWB(StringBuilder log)
         {
             var instr = _stageWB;
             if (instr == null || instr.Opcode == Opcode.NOP) return;
-
             log.AppendLine($"[WB] {instr.ToShortString()}");
-
             switch (instr.Class)
             {
                 case InstructionClass.ALU:
@@ -293,7 +408,7 @@ namespace proiect_RISC.Models
                     if (instr.Rd.HasValue && instr.Rd.Value >= 0 && instr.ResultValue.HasValue)
                     {
                         Registers.Write(instr.Rd.Value, instr.ResultValue.Value);
-                        log.AppendLine($"  R{instr.Rd.Value} <- {instr.ResultValue.Value} (0x{instr.ResultValue.Value:X8})");
+                        log.AppendLine($"  R{instr.Rd.Value} ← {instr.ResultValue.Value} (0x{instr.ResultValue.Value:X8})");
                     }
                     break;
             }
@@ -303,7 +418,6 @@ namespace proiect_RISC.Models
         {
             var instr = _stageMEM;
             if (instr == null || instr.Opcode == Opcode.NOP) return;
-
             log.AppendLine($"[MEM] {instr.ToShortString()}");
 
             switch (instr.Class)
@@ -312,40 +426,33 @@ namespace proiect_RISC.Models
                     if (instr.Op1Value.HasValue)
                     {
                         uint memAddr = (uint)instr.Op1Value.Value;
-                        // Skip DCache+VM if this instruction just resolved a DCache miss stall
                         if (instr == _cacheStallInstruction && !_cacheStallIsICache)
                         {
                             _cacheStallInstruction = null;
-                            log.AppendLine($"  DCache miss stall resolvat — LOAD @ MEM[0x{memAddr:X4}] -> {instr.ResultValue}");
+                            log.AppendLine($"  DCache miss stall resolvat — LOAD @ MEM[0x{memAddr:X4}]");
                             break;
                         }
-                        // TLB lookup (skip if we already stalled for this instruction's TLB miss)
-                        bool skipVmLoad = (instr == _vmStallInstruction);
-                        if (skipVmLoad) _vmStallInstruction = null;
-                        if (!skipVmLoad)
+                        bool skipVm = (instr == _vmStallInstruction);
+                        if (skipVm) _vmStallInstruction = null;
+                        if (!skipVm)
                         {
-                            var vmrLoad = VirtualMemory.Access(memAddr, MemoryAccessType.DataRead, ClockCycle);
-                            int tlbStallLoad = ComputeTlbStall(vmrLoad);
-                            if (tlbStallLoad > 0)
+                            var vmr = VirtualMemory.Access(memAddr, MemoryAccessType.DataRead, ClockCycle);
+                            int tlbStall = ComputeTlbStall(vmr);
+                            if (tlbStall > 0)
                             {
-                                _vmStallsRemaining = tlbStallLoad;
-                                _vmStallIsInst = false;
-                                _vmStallInstruction = instr;
-                                _vmMissPending = true;
-                                log.AppendLine($"  [TLB MISS] LOAD @ 0x{memAddr:X4} VP={vmrLoad.VirtualPage} → +{tlbStallLoad} cicli {(vmrLoad.PteInCache ? "(PTE în cache)" : "(PTE în MP)")}");
-                                break;
+                                _vmStallsRemaining = tlbStall; _vmStallIsInst = false;
+                                _vmStallInstruction = instr; _vmMissPending = true;
+                                log.AppendLine($"  [TLB MISS] LOAD @ 0x{memAddr:X4} → +{tlbStall} cicli"); break;
                             }
-                            log.AppendLine($"  TLB {(vmrLoad.TlbHit ? "HIT " : "MISS→resolve")} LOAD VA=0x{memAddr:X4} PA=0x{vmrLoad.PhysicalAddress:X4} (Caz {(int)vmrLoad.Case})");
+                            log.AppendLine($"  TLB {(vmr.TlbHit ? "HIT" : "MISS→resolve")} LOAD VA=0x{memAddr:X4} PA=0x{vmr.PhysicalAddress:X4}");
                         }
-                        bool dHitLoad = DataCache.Read(memAddr);
+                        bool dHit = DataCache.Read(memAddr);
                         instr.ResultValue = DataMemory.Read(memAddr);
-                        log.AppendLine($"  DCache {(dHitLoad ? "HIT " : "MISS")} READ  @ MEM[0x{memAddr:X4}] -> {instr.ResultValue.Value}");
-                        if (!dHitLoad && DCacheMissPenalty > 0)
+                        log.AppendLine($"  DCache {(dHit ? "HIT " : "MISS")} READ @ MEM[0x{memAddr:X4}] -> {instr.ResultValue.Value}");
+                        if (!dHit && DCacheMissPenalty > 0)
                         {
                             _cacheStallsRemaining = DCacheMissPenalty - 1;
-                            _cacheStallIsICache = false;
-                            _cacheStallInstruction = instr;
-                            _dcacheMissPending = true;
+                            _cacheStallIsICache = false; _cacheStallInstruction = instr; _dcacheMissPending = true;
                         }
                     }
                     break;
@@ -354,51 +461,41 @@ namespace proiect_RISC.Models
                     if (instr.Op1Value.HasValue && instr.Op2Value.HasValue)
                     {
                         uint memAddr = (uint)instr.Op1Value.Value;
-                        // Skip DCache+VM if this instruction just resolved a DCache miss stall
                         if (instr == _cacheStallInstruction && !_cacheStallIsICache)
                         {
                             _cacheStallInstruction = null;
-                            log.AppendLine($"  DCache miss stall resolvat — STORE @ MEM[0x{memAddr:X4}]");
-                            break;
+                            log.AppendLine($"  DCache miss stall resolvat — STORE @ MEM[0x{memAddr:X4}]"); break;
                         }
-                        // TLB lookup (skip if we already stalled for this instruction's TLB miss)
-                        bool skipVmStore = (instr == _vmStallInstruction);
-                        if (skipVmStore) _vmStallInstruction = null;
-                        if (!skipVmStore)
+                        bool skipVm = (instr == _vmStallInstruction);
+                        if (skipVm) _vmStallInstruction = null;
+                        if (!skipVm)
                         {
-                            var vmrStore = VirtualMemory.Access(memAddr, MemoryAccessType.DataWrite, ClockCycle);
-                            int tlbStallStore = ComputeTlbStall(vmrStore);
-                            if (tlbStallStore > 0)
+                            var vmr = VirtualMemory.Access(memAddr, MemoryAccessType.DataWrite, ClockCycle);
+                            int tlbStall = ComputeTlbStall(vmr);
+                            if (tlbStall > 0)
                             {
-                                _vmStallsRemaining = tlbStallStore;
-                                _vmStallIsInst = false;
-                                _vmStallInstruction = instr;
-                                _vmMissPending = true;
-                                log.AppendLine($"  [TLB MISS] STORE @ 0x{memAddr:X4} VP={vmrStore.VirtualPage} → +{tlbStallStore} cicli {(vmrStore.PteInCache ? "(PTE în cache)" : "(PTE în MP)")}");
-                                break;
+                                _vmStallsRemaining = tlbStall; _vmStallIsInst = false;
+                                _vmStallInstruction = instr; _vmMissPending = true;
+                                log.AppendLine($"  [TLB MISS] STORE @ 0x{memAddr:X4} → +{tlbStall} cicli"); break;
                             }
-                            log.AppendLine($"  TLB {(vmrStore.TlbHit ? "HIT " : "MISS→resolve")} STORE VA=0x{memAddr:X4} PA=0x{vmrStore.PhysicalAddress:X4} (Caz {(int)vmrStore.Case})");
+                            log.AppendLine($"  TLB {(vmr.TlbHit ? "HIT" : "MISS→resolve")} STORE VA=0x{memAddr:X4} PA=0x{vmr.PhysicalAddress:X4}");
                         }
-                        bool dHitStore = DataCache.Write(memAddr);
+                        bool dHit = DataCache.Write(memAddr);
                         DataMemory.Write(memAddr, instr.Op2Value.Value);
-                        log.AppendLine($"  DCache {(dHitStore ? "HIT " : "MISS")} WRITE @ MEM[0x{memAddr:X4}] <- {instr.Op2Value.Value}");
-                        if (!dHitStore && DCacheMissPenalty > 0)
+                        log.AppendLine($"  DCache {(dHit ? "HIT " : "MISS")} WRITE @ MEM[0x{memAddr:X4}] ← {instr.Op2Value.Value}");
+                        if (!dHit && DCacheMissPenalty > 0)
                         {
                             _cacheStallsRemaining = DCacheMissPenalty - 1;
-                            _cacheStallIsICache = false;
-                            _cacheStallInstruction = instr;
-                            _dcacheMissPending = true;
+                            _cacheStallIsICache = false; _cacheStallInstruction = instr; _dcacheMissPending = true;
                         }
                     }
                     break;
             }
         }
 
-        private void ExecuteEX(StringBuilder log)
+        private void ExecuteEXInstruction(RISCInstruction instr, StringBuilder log)
         {
-            var instr = _stageEX;
             if (instr == null || instr.Opcode == Opcode.NOP) return;
-
             log.AppendLine($"[EX]  {instr.ToShortString()}");
 
             int op1 = instr.Op1Value ?? (instr.Rs1.HasValue && instr.Rs1.Value >= 0 ? Registers.Read(instr.Rs1.Value) : 0);
@@ -406,66 +503,167 @@ namespace proiect_RISC.Models
 
             switch (instr.Opcode)
             {
-                case Opcode.ADD: instr.ResultValue = op1 + op2; break;
-                case Opcode.SUB: instr.ResultValue = op1 - op2; break;
-                case Opcode.MUL: instr.ResultValue = op1 * op2; break;
-                case Opcode.AND: instr.ResultValue = op1 & op2; break;
-                case Opcode.OR: instr.ResultValue = op1 | op2; break;
-                case Opcode.XOR: instr.ResultValue = op1 ^ op2; break;
-                case Opcode.SHL: instr.ResultValue = op1 << (op2 & 31); break;
-                case Opcode.SHR: instr.ResultValue = (int)((uint)op1 >> (op2 & 31)); break;
-
+                case Opcode.ADD:  instr.ResultValue = op1 + op2; break;
+                case Opcode.SUB:  instr.ResultValue = op1 - op2; break;
+                case Opcode.MUL:  instr.ResultValue = op1 * op2; break;
+                case Opcode.AND:  instr.ResultValue = op1 & op2; break;
+                case Opcode.OR:   instr.ResultValue = op1 | op2; break;
+                case Opcode.XOR:  instr.ResultValue = op1 ^ op2; break;
+                case Opcode.SHL:  instr.ResultValue = op1 << (op2 & 31); break;
+                case Opcode.SHR:  instr.ResultValue = (int)((uint)op1 >> (op2 & 31)); break;
                 case Opcode.ADDI: instr.ResultValue = op1 + (instr.Imm ?? 0); break;
                 case Opcode.SUBI: instr.ResultValue = op1 - (instr.Imm ?? 0); break;
                 case Opcode.ANDI: instr.ResultValue = op1 & (instr.Imm ?? 0); break;
-                case Opcode.ORI: instr.ResultValue = op1 | (instr.Imm ?? 0); break;
-
-                case Opcode.LD: instr.Op1Value = op1; break;
-                case Opcode.LDI: instr.ResultValue = instr.Imm ?? 0; break;
-
+                case Opcode.ORI:  instr.ResultValue = op1 | (instr.Imm ?? 0); break;
+                case Opcode.LD:   instr.Op1Value = op1; break;
+                case Opcode.LDI:  instr.ResultValue = instr.Imm ?? 0; break;
                 case Opcode.ST:
                     instr.Op1Value = op1;
                     instr.Op2Value = instr.Rs2.HasValue ? Registers.Read(instr.Rs2.Value) : 0;
                     break;
-
                 case Opcode.JMP:
                     PC = (uint)(instr.Imm ?? 0);
                     _programCounter = FindInstructionIndex(PC);
-                    log.AppendLine($"  JMP -> PC = 0x{PC:X4}");
-                    _stageIF = null;
-                    _stageDEC = null;
+                    log.AppendLine($"  JMP → PC = 0x{PC:X4}");
                     break;
-
-                case Opcode.BEQ:
-                case Opcode.BNE:
-                case Opcode.BGT:
-                case Opcode.BLT:
+                case Opcode.BEQ: case Opcode.BNE: case Opcode.BGT: case Opcode.BLT:
                     if (EvaluateBranch(instr.Opcode, op1, op2))
                     {
-                        // Calculează offset pe baza adresei instrucțiunii BRANCH (instr.Address), nu pe baza PC curent
                         uint target = (uint)((int)instr.Address + (instr.Imm ?? 0));
                         PC = target;
                         _programCounter = FindInstructionIndex(PC);
-
-                        if (_programCounter >= 0)
-                        {
-                            log.AppendLine($"  BRANCH taken -> PC = 0x{PC:X4} (index {_programCounter}) = '{_program[_programCounter].ToShortString()}'");
-                        }
-                        else
-                        {
-                            log.AppendLine($"  BRANCH taken -> PC = 0x{PC:X4} (ERROR: instrucțiune nu gasita!)");
-                            log.AppendLine($"  [DEBUG] Program addresses: {string.Join(", ", _program.Select(i => $"0x{i.Address:X4}:{i.ToShortString()}"))}");
-                            log.AppendLine($"  [DEBUG] _programCounter = {_programCounter}, _program.Count = {_program.Count}");
-                        }
-
-                        _stageIF = null;
-                        _stageDEC = null;
+                        log.AppendLine($"  BRANCH taken → PC = 0x{PC:X4} (idx {_programCounter})");
                     }
                     else log.AppendLine($"  BRANCH not taken");
                     break;
             }
+            if (instr.ResultValue.HasValue)
+                log.AppendLine($"  Result = {instr.ResultValue.Value} (0x{instr.ResultValue.Value:X8})");
+        }
 
-            if (instr.ResultValue.HasValue) log.AppendLine($"  Result = {instr.ResultValue.Value} (0x{instr.ResultValue.Value:X8})");
+        // ── Forwarding ────────────────────────────────────────────────────────
+
+        private ForwardingInfo ApplyForwardingForDispatch(RISCInstruction candidate, StringBuilder log)
+        {
+            ForwardingInfo first = null;
+            foreach (int reg in candidate.GetReadRegisters())
+            {
+                if (reg < 0) continue;
+
+                // MEM stage: highest priority (instruction just completed EX last cycle)
+                if (_stageMEM != null && _stageMEM.GetWriteRegister() == reg
+                    && _stageMEM.Class != InstructionClass.LOAD // LOAD result not yet available
+                    && _stageMEM.ResultValue.HasValue)
+                {
+                    ApplyForwardedValue(candidate, reg, _stageMEM.ResultValue.Value);
+                    candidate.IsForwarded = true;
+                    var f = new ForwardingInfo { IsActive = true, Path = "MEM→EX", Register = $"R{reg}", ForwardedValue = _stageMEM.ResultValue.Value };
+                    log.AppendLine($"[FWD MEM→EX] R{reg}={_stageMEM.ResultValue.Value} de la '{_stageMEM.ToShortString()}'");
+                    if (first == null) first = f;
+                    continue;
+                }
+
+                // Completion list: instructions that just finished EX this cycle
+                var fromCL = _completionList.FirstOrDefault(c => c.GetWriteRegister() == reg && c.ResultValue.HasValue);
+                if (fromCL != null)
+                {
+                    ApplyForwardedValue(candidate, reg, fromCL.ResultValue.Value);
+                    candidate.IsForwarded = true;
+                    var f = new ForwardingInfo { IsActive = true, Path = "EX→EX", Register = $"R{reg}", ForwardedValue = fromCL.ResultValue.Value };
+                    log.AppendLine($"[FWD EX→EX] R{reg}={fromCL.ResultValue.Value} de la '{fromCL.ToShortString()}'");
+                    if (first == null) first = f;
+                }
+            }
+            return first ?? ForwardingInfo.None;
+        }
+
+        private void ApplyForwardedValue(RISCInstruction consumer, int regIdx, int value)
+        {
+            if (consumer.Rs1 == regIdx) consumer.Op1Value = value;
+            if (consumer.Rs2 == regIdx) consumer.Op2Value = value;
+        }
+
+        // ── Hazard detection ──────────────────────────────────────────────────
+
+        private HazardInfo DetectHazard(RISCInstruction consumer)
+        {
+            if (consumer == null) return HazardInfo.None;
+            foreach (int reg in consumer.GetReadRegisters())
+            {
+                if (reg < 0) continue;
+                if (!Registers.IsValid(reg))
+                {
+                    var producer = FindProducer(reg);
+                    return new HazardInfo
+                    {
+                        HasHazard = true, HazardType = "RAW",
+                        ConflictRegister = $"R{reg}",
+                        Producer = producer, Consumer = consumer,
+                        StallsRequired = 1,
+                        Description = $"RAW R{reg}: '{consumer.ToShortString()}' ← '{producer?.ToShortString()}'"
+                    };
+                }
+            }
+            return HazardInfo.None;
+        }
+
+        private RISCInstruction FindProducer(int reg)
+        {
+            // Search in-flight EX, completion list, MEM, WB
+            var fromFlight = _inFlightEX.FirstOrDefault(i => i.GetWriteRegister() == reg);
+            if (fromFlight != null) return fromFlight;
+            var fromCL = _completionList.FirstOrDefault(i => i.GetWriteRegister() == reg);
+            if (fromCL != null) return fromCL;
+            if (_stageMEM?.GetWriteRegister() == reg) return _stageMEM;
+            if (_stageWB?.GetWriteRegister() == reg) return _stageWB;
+            return null;
+        }
+
+        // ── Fetch ─────────────────────────────────────────────────────────────
+
+        private RISCInstruction FetchNextInstruction(StringBuilder log)
+        {
+            if (_program == null || _programCounter < 0 || _programCounter >= _program.Count)
+            {
+                IsRunning = false;
+                return null;
+            }
+            var instr = _program[_programCounter];
+            if (instr == null) { _programCounter++; return null; }
+
+            _programCounter++;
+            PC = instr.Address;
+            instr.EnterCycle = ClockCycle;
+            instr.CurrentStage = PipelineStage.IF;
+
+            var vmrIF = VirtualMemory.Access(instr.Address, MemoryAccessType.Instruction, ClockCycle);
+            int ifTlbStall = ComputeTlbStall(vmrIF);
+            if (ifTlbStall > 0)
+            {
+                _vmStallsRemaining = ifTlbStall; _vmStallIsInst = true; _vmStallInstruction = instr;
+                log.AppendLine($"[IF]  TLB MISS → +{ifTlbStall} cicli | {instr.ToShortString()}");
+            }
+            else
+                log.AppendLine($"[IF]  TLB {(vmrIF.TlbHit ? "HIT " : "MISS→resolve")} VA=0x{instr.Address:X4} | {instr.ToShortString()}");
+
+            bool iHit = InstructionCache.Read(instr.Address);
+            if (!iHit && ICacheMissPenalty > 0)
+            {
+                _cacheStallsRemaining = ICacheMissPenalty; _cacheStallIsICache = true; _cacheStallInstruction = instr;
+                log.AppendLine($"[IF]  ICache MISS → +{ICacheMissPenalty} cicli | {instr.ToShortString()}");
+            }
+            else
+                log.AppendLine($"[IF]  ICache {(iHit ? "HIT " : "MISS")} | {instr.ToShortString()} @ 0x{instr.Address:X4}");
+
+            return instr;
+        }
+
+        private int ComputeTlbStall(MemoryAccessResult vmr)
+        {
+            if (!VmStallsEnabled || vmr == null || vmr.TlbHit) return 0;
+            int stall = VirtualMemory.Mmu.Latencies.CacheCycles;
+            if (!vmr.PteInCache) stall += VirtualMemory.Mmu.Latencies.MainMemoryCycles;
+            return stall;
         }
 
         private bool EvaluateBranch(Opcode op, int a, int b)
@@ -480,221 +678,44 @@ namespace proiect_RISC.Models
             }
         }
 
-        private void PrepareDEC(RISCInstruction instr)
-        {
-            if (instr == null || instr.Opcode == Opcode.NOP) return;
+        private int FindInstructionIndex(uint address)
+            => _program.FindIndex(i => i.Address == address);
 
-            // CRITICAL: Citeste valorile INAINTE de a invalida registrul destinatie!
-            // Altfel ADDI R7, R7, 1 invalideaza R7 inainte de a citi valoarea pentru Rs1
-            if (instr.Rs1.HasValue && instr.Rs1.Value >= 0) instr.Op1Value = Registers.Read(instr.Rs1.Value);
-            if (instr.Rs2.HasValue && instr.Rs2.Value >= 0) instr.Op2Value = Registers.Read(instr.Rs2.Value);
-
-            if (instr.GetWriteRegister() >= 0) Registers.InvalidateRegister(instr.GetWriteRegister());
-        }
-
-        private HazardInfo DetectHazard(RISCInstruction consumer)
-        {
-            if (consumer == null) return HazardInfo.None;
-
-            foreach (int regIdx in consumer.GetReadRegisters())
-            {
-                if (regIdx < 0) continue;
-                if (!Registers.IsValid(regIdx))
-                {
-                    var producer = FindProducer(regIdx);
-                    return new HazardInfo
-                    {
-                        HasHazard = true,
-                        HazardType = "RAW",
-                        ConflictRegister = $"R{regIdx}",
-                        Producer = producer,
-                        Consumer = consumer,
-                        StallsRequired = 1,
-                        Description = $"RAW pe R{regIdx}: '{consumer.ToShortString()}' citeste inainte ca '{producer?.ToShortString()}' sa scrie."
-                    };
-                }
-            }
-            return HazardInfo.None;
-        }
-
-        private RISCInstruction FindProducer(int regIdx)
-        {
-            if (_stageEX?.GetWriteRegister() == regIdx) return _stageEX;
-            if (_stageMEM?.GetWriteRegister() == regIdx) return _stageMEM;
-            if (_stageWB?.GetWriteRegister() == regIdx) return _stageWB;
-            return null;
-        }
-
-        private ForwardingInfo CheckAndApplyForwarding(StringBuilder log)
-        {
-            if (_stageDEC == null) return ForwardingInfo.None;
-
-            var readRegs = _stageDEC.GetReadRegisters();
-            ForwardingInfo firstFwd = null;
-
-            // Aplică forwarding pentru TOȚI registrii citiți (nu returna după primul!)
-            foreach (int regIdx in readRegs)
-            {
-                if (regIdx < 0) continue;
-
-                // EX->EX forwarding: prioritate mai mare (date mai proaspete)
-                if (_stageEX != null && _stageEX.GetWriteRegister() == regIdx && _stageEX.Class != InstructionClass.LOAD)
-                {
-                    int fwdValue = _stageEX.ResultValue ?? 0;
-                    ApplyForwardedValue(_stageDEC, regIdx, fwdValue);
-                    var fwd = new ForwardingInfo { IsActive = true, Path = "EX?EX", Register = $"R{regIdx}", ForwardedValue = fwdValue, Description = $"[FWD EX?EX] R{regIdx} de la '{_stageEX.ToShortString()}' catre '{_stageDEC.ToShortString()}'" };
-                    log.AppendLine(fwd.Description);
-                    _stageDEC.IsForwarded = true;
-                    _stageDEC.ForwardSource = fwd.Path;
-                    if (firstFwd == null) firstFwd = fwd;
-                    continue; // Nu verifica MEM pentru acest registru
-                }
-
-                // MEM->EX forwarding
-                if (_stageMEM != null && _stageMEM.GetWriteRegister() == regIdx && _stageMEM.ResultValue.HasValue)
-                {
-                    ApplyForwardedValue(_stageDEC, regIdx, _stageMEM.ResultValue.Value);
-                    var fwd = new ForwardingInfo { IsActive = true, Path = "MEM?EX", Register = $"R{regIdx}", ForwardedValue = _stageMEM.ResultValue.Value, Description = $"[FWD MEM?EX] R{regIdx} = {_stageMEM.ResultValue.Value} de la '{_stageMEM.ToShortString()}' catre '{_stageDEC.ToShortString()}'" };
-                    log.AppendLine(fwd.Description);
-                    _stageDEC.IsForwarded = true;
-                    _stageDEC.ForwardSource = fwd.Path;
-                    if (firstFwd == null) firstFwd = fwd;
-                }
-            }
-
-            return firstFwd ?? ForwardingInfo.None;
-        }
-
-        private void ApplyForwardedValue(RISCInstruction consumer, int regIdx, int value)
-        {
-            if (consumer.Rs1 == regIdx) consumer.Op1Value = value;
-            if (consumer.Rs2 == regIdx) consumer.Op2Value = value;
-        }
-
-        private RISCInstruction FetchNextInstruction(StringBuilder log)
-        {
-            if (_program == null || _programCounter < 0 || _programCounter >= _program.Count)
-            {
-                IsRunning = false;
-                return null;
-            }
-
-            var instr = _program[_programCounter];
-            if (instr == null)
-            {
-                _programCounter++;
-                return null;
-            }
-
-            _programCounter++;
-            PC = instr.Address;
-            instr.EnterCycle = ClockCycle;
-            instr.CurrentStage = PipelineStage.IF;
-
-            // TLB lookup for instruction address translation
-            var vmrIF = VirtualMemory.Access(instr.Address, MemoryAccessType.Instruction, ClockCycle);
-            int ifTlbStall = ComputeTlbStall(vmrIF);
-            if (ifTlbStall > 0)
-            {
-                _vmStallsRemaining = ifTlbStall;
-                _vmStallIsInst = true;
-                _vmStallInstruction = instr;
-                log.AppendLine($"[IF]  TLB MISS → VP={vmrIF.VirtualPage} | +{ifTlbStall} cicli TLB stall {(vmrIF.PteInCache ? "(PTE în cache)" : "(PTE în MP)")} | {instr.ToShortString()} @ 0x{instr.Address:X4}");
-            }
-            else
-            {
-                log.AppendLine($"[IF]  TLB {(vmrIF.TlbHit ? "HIT " : "MISS→resolve")} VA=0x{instr.Address:X4} (Caz {(int)vmrIF.Case}) | {instr.ToShortString()}");
-            }
-
-            bool iHit = InstructionCache.Read(instr.Address);
-            if (!iHit && ICacheMissPenalty > 0)
-            {
-                _cacheStallsRemaining = ICacheMissPenalty;
-                _cacheStallIsICache = true;
-                _cacheStallInstruction = instr;
-                log.AppendLine($"[IF]  ICache MISS → +{ICacheMissPenalty} cicli stall | {instr.ToShortString()} @ 0x{instr.Address:X4}");
-            }
-            else
-            {
-                log.AppendLine($"[IF]  ICache {(iHit ? "HIT " : "MISS")} | {instr.ToShortString()} @ 0x{instr.Address:X4}");
-            }
-            return instr;
-        }
-
-        private int ComputeTlbStall(MemoryAccessResult vmr)
-        {
-            if (!VmStallsEnabled || vmr == null || vmr.TlbHit) return 0;
-            int stall = VirtualMemory.Mmu.Latencies.CacheCycles;
-            if (!vmr.PteInCache) stall += VirtualMemory.Mmu.Latencies.MainMemoryCycles;
-            return stall;
-        }
-
-        private RISCInstruction CreateNOPBubble()
-        {
-            return new RISCInstruction
-            {
-                Opcode = Opcode.NOP,
-                Class = InstructionClass.NOP,
-                RawText = "NOP (bubble)",
-                CurrentStage = PipelineStage.EX,
-                IsBubble = true,
-                ProgramIndex = -1
-            };
-        }
+        // ── Space-time ────────────────────────────────────────────────────────
 
         private void RecordSpaceTime(RISCInstruction instr, int cycle, string stageLabel)
         {
             if (instr == null || instr.IsBubble) return;
             if (instr.ProgramIndex >= 0 && instr.ProgramIndex < SpaceTimeTable.Count)
-            {
                 SpaceTimeTable[instr.ProgramIndex].SetStage(cycle, stageLabel);
-            }
         }
 
-        private void RecordSpaceTimeAll(int cycle)
-        {
-            RecordSpaceTime(_stageIF, cycle, "IF");
-            RecordSpaceTime(_stageDEC, cycle, "DEC");
-            RecordSpaceTime(_stageEX, cycle, "EX");
-            RecordSpaceTime(_stageMEM, cycle, "MEM");
-            RecordSpaceTime(_stageWB, cycle, "WB");
-        }
-
-        private int FindInstructionIndex(uint address)
-        {
-            int index = _program.FindIndex(i => i.Address == address);
-            if (index < 0)
-            {
-                // Debug: printează toate adresele din program
-                var addresses = string.Join(", ", _program.Select(i => $"0x{i.Address:X4}"));
-                // Log ca string, nu ca apel cu log param
-                // Temporar, nu avem log aqui, deci nu putem printa
-            }
-            return index;
-        }
+        // ── Snapshot ──────────────────────────────────────────────────────────
 
         private PipelineState BuildSnapshot(string log, HazardInfo hazard, ForwardingInfo fwd)
         {
+            var exDisplay = _inFlightEX.Count > 0 ? _inFlightEX[0] : null;
             return new PipelineState
             {
                 ClockCycle = ClockCycle,
                 PC = PC,
                 TotalStalls = TotalStalls,
-                StageIF = _stageIF,
+                StageIF  = _stageIF,
                 StageDEC = _stageDEC,
-                StageEX = _stageEX,
+                StageEX  = exDisplay,
                 StageMEM = _stageMEM,
-                StageWB = _stageWB,
-                ActiveHazard = hazard ?? HazardInfo.None,
+                StageWB  = _stageWB,
+                ActiveHazard    = hazard ?? HazardInfo.None,
                 ActiveForwarding = fwd ?? ForwardingInfo.None,
                 RegisterSnapshot = Registers.GetSnapshot(),
                 LogMessage = log,
-                LogText = log,
-                DetailIF = _stageIF != null ? $"0x{_stageIF.Address:X4}: {_stageIF.ToShortString()}" : "",
+                LogText    = log,
+                DetailIF  = _stageIF  != null ? $"0x{_stageIF.Address:X4}: {_stageIF.ToShortString()}" : "",
                 DetailDEC = _stageDEC != null ? $"Op1={_stageDEC.Op1Value?.ToString() ?? "?"}, Op2={_stageDEC.Op2Value?.ToString() ?? "?"}" : "",
-                DetailEX = _stageEX != null ? (_stageEX.ResultValue.HasValue ? $"ALU?{_stageEX.ResultValue.Value}" : "ALU...") : "",
-                DetailMEM = _stageMEM != null ? (_stageMEM.Class == InstructionClass.LOAD ? $"MEM[{_stageMEM.Op1Value}]?R{_stageMEM.Rd}" : _stageMEM.Class == InstructionClass.STORE ? $"MEM[{_stageMEM.Op1Value}]?{_stageMEM.Op2Value}" : "") : "",
-                DetailWB = _stageWB != null ? (_stageWB.GetWriteRegister() >= 0 && _stageWB.ResultValue.HasValue ? $"R{_stageWB.Rd}?{_stageWB.ResultValue.Value}" : "") : ""
+                DetailEX  = exDisplay != null ? (exDisplay.ResultValue.HasValue ? $"ALU→{exDisplay.ResultValue.Value}" : "ALU...") : "",
+                DetailMEM = _stageMEM != null ? (_stageMEM.Class == InstructionClass.LOAD  ? $"MEM[{_stageMEM.Op1Value}]→R{_stageMEM.Rd}" :
+                                                  _stageMEM.Class == InstructionClass.STORE ? $"MEM[{_stageMEM.Op1Value}]←{_stageMEM.Op2Value}" : "") : "",
+                DetailWB  = _stageWB  != null ? (_stageWB.GetWriteRegister() >= 0 && _stageWB.ResultValue.HasValue ? $"R{_stageWB.Rd}←{_stageWB.ResultValue.Value}" : "") : ""
             };
         }
     }
