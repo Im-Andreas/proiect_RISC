@@ -206,4 +206,45 @@ namespace proiect_RISC.Models
         public void SetStage(int cycle, string stage) => CycleStages[cycle] = stage;
         public string GetStage(int cycle) => CycleStages.TryGetValue(cycle, out var s) ? s : "";
     }
+
+    // ── Execution model selector ──────────────────────────────────────────────
+    public enum ExecutionModel { InOrder, Scoreboard, Tomasulo }
+
+    // ── Scoreboard (tabela de marcaj — CDC 6600) ──────────────────────────────
+    public enum SbStage { RO, EX, WR }
+
+    public class SbFUState
+    {
+        public FunctionalUnitType UnitType;
+        public int UnitIndex;
+        public RISCInstruction Instr;
+        public int Fi = -1;              // destination register
+        public int Fj = -1, Fk = -1;    // source register indices
+        public string Qj = "", Qk = "";  // producing FU name ("" = operand ready)
+        public bool Rj = true, Rk = true; // source operand ready-to-read?
+        public int CyclesLeft;           // remaining EX cycles after first EX
+        public SbStage Stage;
+        public int? ResultValue;
+        public string Name => $"{UnitType}-{UnitIndex}";
+    }
+
+    // ── Tomasulo — stații de rezervare + RAT + CDB ────────────────────────────
+    public class ReservationStation
+    {
+        public FunctionalUnitType UnitType;
+        public int RSIndex;
+        public int FUInstanceIndex = -1;  // which FU instance is executing
+        public bool Busy;
+        public RISCInstruction Instr;
+        public Opcode Op;
+        public int? Vj, Vk;              // operand values (null = not yet known)
+        public string Qj = "", Qk = "";  // RS tag that will produce Vj/Vk ("" = ready)
+        public int? Imm;
+        public int DestReg = -1;          // destination register
+        public int CyclesLeft;            // EX cycles remaining after dispatch
+        public bool Dispatched;           // FU is executing this RS entry
+        public int? ResultValue;
+        public bool WRDone;               // CDB broadcast completed
+        public string Tag => $"{UnitType}-RS{RSIndex}";
+    }
 }
