@@ -949,5 +949,10 @@ namespace proiect_RISC
             // Highlight invalid registers
             dgvRegisters.Rows[regIndex].DefaultCellStyle.BackColor = valid ? Color.White : Color.LightYellow;
         }
+
+        private void Form1_Load(object sender, EventArgs e)
+        {
+
+        }
     }
 }
